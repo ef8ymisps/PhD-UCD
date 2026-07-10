@@ -837,9 +837,17 @@ function main()
     summary_path = joinpath(output_dir, "compact_opf_validation_summary.csv")
     cases = split_csv_arg(arg_value("--cases", join(DEFAULT_CASES, ",")))
     models = parse_models(arg_value("--models", "ac,dc"))
-    # 500 (Ipopt's own default) is insufficient for large/stressed systems --
-    # case6470_rte's base AC-OPF needed 564 iterations, case1888_rte's
-    # reactive_generation_limits scenario hit the same wall. Raised to 3000.
+    # Explicitly pinned rather than left to the installed Ipopt's own default
+    # (verified empirically via `ipopt --print_options_documentation`: Ipopt
+    # 3.14.19's actual default max_iter is already 3000, not 500 as an
+    # earlier version of this comment claimed -- whatever produced the
+    # originally-observed 500-iteration failures on case6470_rte's base
+    # AC-OPF (564 iterations needed) and case1888_rte's
+    # reactive_generation_limits scenario predates this, and wasn't Ipopt's
+    # native default on the currently-installed version. Pinning explicitly
+    # here protects against a future Ipopt upgrade silently changing this
+    # default out from under the validation sweep -- see
+    # docs/notes/solver_tolerances.md.
     max_iter = parse(Int, arg_value("--max-iter", "3000"))
     scenario_filter = Set(split_csv_arg(arg_value("--only-scenario-ids", "")))
     scenario_limit = parse(Int, arg_value("--max-scenarios", "0"))
@@ -855,8 +863,33 @@ function main()
     end
 
     completed = completed_keys(summary_path)
-    ac_optimizer = optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0, "max_iter" => max_iter)
-    dc_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "output_flag" => false)
+    # Tolerances pinned explicitly (verified via `ipopt --print_options_documentation`
+    # / highspy against the installed Ipopt 3.14.19 / HiGHS 1.15.1 that these
+    # already match each solver's own default -- pinning changes no solve
+    # behavior, it documents/protects the value used for both the own-model
+    # solve AND the PowerModels reference solve, since both share these same
+    # optimizer objects (see run_one_model below). Matches the equivalent pin
+    # on the Python side (own_models/src/opf/{ac,dc}/solve.py). See
+    # docs/notes/solver_tolerances.md -- in particular, these are NOT the
+    # cause of binding-constraint classification mismatches (that's a
+    # downstream 1e-6 classification threshold, ~100x tighter than these).
+    ac_optimizer = optimizer_with_attributes(
+        Ipopt.Optimizer,
+        "print_level" => 0,
+        "max_iter" => max_iter,
+        "tol" => 1e-8,
+        "acceptable_tol" => 1e-6,
+        "constr_viol_tol" => 1e-4,
+        "compl_inf_tol" => 1e-4,
+        "dual_inf_tol" => 1.0,
+    )
+    dc_optimizer = optimizer_with_attributes(
+        HiGHS.Optimizer,
+        "output_flag" => false,
+        "primal_feasibility_tolerance" => 1e-7,
+        "dual_feasibility_tolerance" => 1e-7,
+        "ipm_optimality_tolerance" => 1e-8,
+    )
     scenarios_seen = 0
 
     mkpath(output_dir)

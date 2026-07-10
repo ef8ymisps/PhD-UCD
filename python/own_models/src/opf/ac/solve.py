@@ -26,6 +26,24 @@ from own_models.src.opf.ac.model import build_ac_opf_pyomo_model
 from own_models.src.opf.ac.results import ACOPFResult, extract_ac_opf_result
 from own_models.src.opf.solver_iterations import solve_with_iteration_capture
 
+# Pinned explicitly rather than left to Ipopt's own (solver-version-dependent)
+# defaults. Verified via `ipopt --print_options_documentation` against the
+# installed Ipopt 3.14.19 that these values already match what Ipopt
+# defaults to today -- pinning changes no solve behavior now, it protects
+# against a future Ipopt upgrade silently changing these out from under the
+# validation pipeline, and matches the equivalent pin on the Julia side
+# (julia/own_models/src/opf/ac/solve.jl). See docs/notes/solver_tolerances.md
+# for the full comparison and why these are NOT the cause of the
+# binding-constraint classification mismatches seen in validation (that's a
+# downstream 1e-6 classification threshold, ~100x tighter than these).
+DEFAULT_IPOPT_TOLERANCES: dict[str, Any] = {
+    "tol": 1e-8,
+    "acceptable_tol": 1e-6,
+    "constr_viol_tol": 1e-4,
+    "compl_inf_tol": 1e-4,
+    "dual_inf_tol": 1.0,
+}
+
 
 def solve_ac_opf_pyomo(
     case: PowerCase,
@@ -73,9 +91,10 @@ def solve_ac_opf_pyomo(
             "provide a compatible Pyomo solver name explicitly."
         )
 
-    if solver_options:
-        for key, value in solver_options.items():
-            opt.options[key] = value
+    effective_options = dict(DEFAULT_IPOPT_TOLERANCES) if pyomo_solver == "ipopt" else {}
+    effective_options.update(solver_options or {})
+    for key, value in effective_options.items():
+        opt.options[key] = value
 
     solve_result, iterations = solve_with_iteration_capture(opt, model, tee=tee)
 

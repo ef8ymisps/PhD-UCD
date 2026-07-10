@@ -198,7 +198,18 @@ function export_reference(case_name, scenario, case_dir, output_dir)
     data = PowerModels.parse_file(case_path)
     modified = apply_scenario(data, scenario)
 
-    optimizer = optimizer_with_attributes(HiGHS.Optimizer, "output_flag" => false)
+    # Tolerances pinned explicitly to match the own-model side (see
+    # julia/own_models/scripts/09_run_compact_opf_validation_sweeps.jl and
+    # docs/notes/solver_tolerances.md) -- verified to already equal HiGHS
+    # 1.15.1's own defaults, so this changes no solve behavior, just makes
+    # the PowerModels reference solve's tolerances explicit and pinned.
+    optimizer = optimizer_with_attributes(
+        HiGHS.Optimizer,
+        "output_flag" => false,
+        "primal_feasibility_tolerance" => 1e-7,
+        "dual_feasibility_tolerance" => 1e-7,
+        "ipm_optimality_tolerance" => 1e-8,
+    )
     # instantiate_model + optimize_model! (rather than the solve_dc_opf
     # convenience wrapper) so the underlying JuMP model stays reachable for
     # simplex_iterations -- same pattern used for the DC OPF sweep backfill

@@ -37,9 +37,12 @@ DEFAULT_SETTINGS = {
     "voltage_bounds": None,
     "objective_type": "generation_cost",
     "warm_start": "case",
-    # 500 (Ipopt's own default) is insufficient for large/stressed systems --
-    # case6470_rte's base AC-OPF needed 564 iterations, case1888_rte's
-    # reactive_generation_limits scenario hit the same wall. Raised to 3000.
+    # Explicitly pinned rather than left to Ipopt's own default (verified
+    # empirically via `ipopt --print_options_documentation`: Ipopt 3.14.19's
+    # actual default max_iter is already 3000, not 500 as an earlier version
+    # of this comment claimed). case6470_rte's base AC-OPF needed 564
+    # iterations, case1888_rte's reactive_generation_limits scenario hit a
+    # similar wall -- see docs/notes/solver_tolerances.md.
     "solver_options": {"print_level": 0, "max_iter": 3000},
     "scenario_filter_ids": None,
 }

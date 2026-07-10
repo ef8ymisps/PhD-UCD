@@ -26,7 +26,7 @@ function add_ac_power_balance!(model::Model, case::PowerCase, data::ACOPFData, p
                         conductance * cos(va[bus_id] - va[other_bus_id]) +
                         susceptance * sin(va[bus_id] - va[other_bus_id])
                     )
-                    for (other_bus_id, conductance, susceptance) in data.  [bus_id]
+                    for (other_bus_id, conductance, susceptance) in data.ybus_row_terms[bus_id]
                 )
         )
 

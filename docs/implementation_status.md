@@ -133,7 +133,12 @@ their rating.
   iterations needed). Same pattern recurred on `case1888_rte`'s
   `reactive_generation_limits` scenario. **This is the explicit next task —
   raising the default iteration limit — deferred until after this
-  documentation pass.**
+  documentation pass.** [**Correction, 2026-07-10**: "500 (Ipopt's own
+  default)" is factually wrong for the currently-installed Ipopt 3.14.19 —
+  verified directly via `ipopt --print_options_documentation`, its real
+  default `max_iter` is 3000. The 500 figure was most likely an explicit
+  (mistaken) setting in an earlier version of the code, not Ipopt's native
+  behavior. See `docs/notes/solver_tolerances.md`.]
 - **Solve-time**: own model ~6x slower than PowerModels on the largest case
   tested (317.8s vs 51.7s, case6470_rte AC base) — not a correctness issue,
   worth watching if scaling further.

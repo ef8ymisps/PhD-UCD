@@ -185,6 +185,20 @@ disagreements; a branch-flow sign/magnitude convention check.
     scenarios: 31 of 1888_rte's total (21 in `reactive_power_stress`, 10 in
     `load_scaling`), vs. 1354_pegase's 1 and 6470_rte's 4 spread across other
     scenario families, and 0 everywhere else across all 8 cases.
+  - **Root-caused (2026-07-10) why binding-constraint classification
+    mismatches happen at all, distinct from the 1888_rte non-uniqueness
+    above**: own model and PowerModels use byte-identical, verified solver
+    tolerances (`docs/notes/solver_tolerances.md`) — Ipopt
+    `constr_viol_tol`/`compl_inf_tol` = 1e-4 — but the binding
+    classification code (`violations.py`/`opf_solution_inspection.jl`) uses
+    a hardcoded 1e-6 distance-to-bound cutoff, ~100x tighter. Two
+    independently-converged solves that agree to ~1e-6 pu can land on
+    opposite sides of that cutoff. Worked real example in the tolerances
+    doc: bus 4482's `vmax` mismatch is a 7.7e-7 pu own-vs-PM gap, both sides
+    well within Ipopt's own convergence criteria. This explains the small
+    mismatch counts (1354_pegase's 1, 6470_rte's 4) but *not* the large
+    1888_rte ones (31, multi-pu gaps — six orders of magnitude too big for
+    this mechanism).
 - **Solver iterations, own vs. PowerModels (Julia AC, backfilled this
   session)**: PowerModels needs *more* Ipopt iterations than the own model
   on most mid-size cases, but *fewer* on the two largest (1888_rte: 448 vs.
@@ -656,6 +670,8 @@ rather than letting this grow unbounded.
 
 **OPF validation**: `docs/python_ac_opf_validation.md`,
 `docs/ac_pf_q_limit_cross_language_validation.md`, `docs/implementation_status.md`,
+`docs/notes/solver_tolerances.md` (verified Ipopt/HiGHS/PowerModels tolerances
+and the binding-constraint classification mismatch root cause),
 `results/presentable/opf_validation_findings/`
 
 **Security / N-1**: `docs/formulations/security_constraints.md`,

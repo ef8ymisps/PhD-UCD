@@ -207,7 +207,20 @@ function export_reference(case_name, scenario, case_dir, output_dir)
     data = PowerModels.parse_file(case_path)
     modified = apply_scenario(data, scenario)
 
-    optimizer = optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0)
+    # Tolerances pinned explicitly to match the own-model side (see
+    # julia/own_models/scripts/09_run_compact_opf_validation_sweeps.jl and
+    # docs/notes/solver_tolerances.md) -- verified to already equal Ipopt
+    # 3.14.19's own defaults, so this changes no solve behavior, just makes
+    # the PowerModels reference solve's tolerances explicit and pinned.
+    optimizer = optimizer_with_attributes(
+        Ipopt.Optimizer,
+        "print_level" => 0,
+        "tol" => 1e-8,
+        "acceptable_tol" => 1e-6,
+        "constr_viol_tol" => 1e-4,
+        "compl_inf_tol" => 1e-4,
+        "dual_inf_tol" => 1.0,
+    )
     # instantiate_model + optimize_model! (rather than the solve_ac_opf
     # convenience wrapper) so the underlying JuMP model stays reachable for
     # barrier_iterations -- same pattern used in
