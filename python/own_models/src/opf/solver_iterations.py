@@ -18,6 +18,12 @@ from typing import Any
 _IPOPT_PATTERN = re.compile(r"Number of Iterations\.+:\s*(\d+)")
 _HIGHS_SIMPLEX_PATTERN = re.compile(r"Simplex\s+iterations:\s*(\d+)")
 _HIGHS_IPM_PATTERN = re.compile(r"IPM\s+iterations:\s*(\d+)")
+# HiGHS's presolve can fully reduce a small/well-conditioned DC-OPF LP to
+# nothing ("Presolve reductions: ... - Reduced to empty") before simplex ever
+# runs -- confirmed on case14_ieee/case30_ieee's DC OPF. No "Simplex
+# iterations" line is printed in that case, but the true count is 0, not
+# unknown: presolve alone found the optimum.
+_HIGHS_PRESOLVE_EMPTY_PATTERN = re.compile(r"Reduced to empty")
 
 
 def _parse_iteration_count(log: str) -> float:
@@ -25,6 +31,8 @@ def _parse_iteration_count(log: str) -> float:
         match = pattern.search(log)
         if match:
             return float(match.group(1))
+    if _HIGHS_PRESOLVE_EMPTY_PATTERN.search(log):
+        return 0.0
     return float("nan")
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -141,6 +142,7 @@ def dc_opf_powermodels_comparison_summary(
     branch_rows: pd.DataFrame,
     *,
     scenario: str,
+    own_solve_time_sec: float = np.nan,
 ) -> pd.DataFrame:
     own_solved = bool(own_result.success)
     pm_solved = _reference_solved(reference)
@@ -198,7 +200,9 @@ def dc_opf_powermodels_comparison_summary(
         "std_loading_pct_diff": std_loading_pct_diff,
         "max_power_balance_violation": own_result.max_power_balance_violation,
         "own_solve_iterations": getattr(own_result, "solve_iterations", np.nan),
-        "pm_solve_iterations": np.nan,
+        "pm_solve_iterations": np.nan if reference.get("solve_iterations") is None else reference["solve_iterations"],
+        "own_solve_time_sec": own_solve_time_sec,
+        "pm_solve_time_sec": np.nan if reference.get("solve_time_sec") is None else reference["solve_time_sec"],
     }
     row.update(binding_counts)
 
@@ -215,12 +219,14 @@ def run_python_dc_opf_against_powermodels(
     case = load_powercase_from_powermodels_json(case_json_path)
     reference = load_powermodels_reference(reference_json_path)
     try:
+        solve_start = time.time()
         _model, _raw_results, own_result = solve_dc_opf_pyomo(
             case,
             cost_power_units="pu",
             include_branch_limits=True,
             include_angle_limits=True,
         )
+        own_solve_time_sec = time.time() - solve_start
 
         generator_rows = compare_dc_opf_generators_with_powermodels(case, own_result, reference)
         bus_rows = compare_dc_opf_buses_with_powermodels(case, own_result, reference)
@@ -233,6 +239,7 @@ def run_python_dc_opf_against_powermodels(
             bus_rows,
             branch_rows,
             scenario=scenario,
+            own_solve_time_sec=own_solve_time_sec,
         )
         own_summary = dc_opf_summary_row(case, own_result, scenario=scenario)
         own_generator_rows = dc_opf_generator_rows(case, own_result)
@@ -261,6 +268,8 @@ def run_python_dc_opf_against_powermodels(
                     "max_va_diff": np.nan,
                     "max_pf_diff": np.nan,
                     "max_power_balance_violation": np.nan,
+                    "own_solve_time_sec": np.nan,
+                    "pm_solve_time_sec": np.nan if reference.get("solve_time_sec") is None else reference["solve_time_sec"],
                     "own_message": str(exc),
                 }
             ]

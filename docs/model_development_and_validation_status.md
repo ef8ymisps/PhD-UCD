@@ -185,11 +185,21 @@ disagreements; a branch-flow sign/magnitude convention check.
     scenarios: 31 of 1888_rte's total (21 in `reactive_power_stress`, 10 in
     `load_scaling`), vs. 1354_pegase's 1 and 6470_rte's 4 spread across other
     scenario families, and 0 everywhere else across all 8 cases.
-- **Solver iterations, own vs. PowerModels (AC, backfilled this session)**:
-  PowerModels needs *more* Ipopt iterations than the own model on most
-  mid-size cases, but *fewer* on the two largest (1888_rte: 448 vs. 405;
-  6470_rte: 265 vs. 559 own). Real signal worth a closer look, not a
-  plotting artifact — flagged as an open item (§6).
+- **Solver iterations, own vs. PowerModels (Julia AC, backfilled this
+  session)**: PowerModels needs *more* Ipopt iterations than the own model
+  on most mid-size cases, but *fewer* on the two largest (1888_rte: 448 vs.
+  405; 6470_rte: 265 vs. 559 own). Real signal worth a closer look, not a
+  plotting artifact — flagged as an open item (§7).
+- **Solver iterations, own vs. PowerModels (Python AC+DC, implemented
+  2026-07-10)**: now capturing real PowerModels iteration counts for
+  Python's 3-case set too (previously always `NaN`, §6). AC: own and
+  PowerModels track closely on all 3 cases (e.g. `case5_pjm`: 20 vs. 22
+  mean). DC: PowerModels needs 5/18/34 iterations on
+  `case5_pjm`/`case14_ieee`/`case30_ieee` respectively, while the *own*
+  DC-OPF formulation solves `case14_ieee`/`case30_ieee` via HiGHS presolve
+  alone (0 simplex iterations, confirmed genuine — not missing data) —
+  flagged as an open item (§7) whether that's a meaningful formulation
+  difference worth investigating.
 - **Solve-time**: own model ~6x slower than PowerModels on the largest case
   tested (317.8s vs 51.7s, case6470_rte AC base) — not a correctness issue,
   worth watching if scaling further.
@@ -533,19 +543,58 @@ To avoid conflating two different things that share vocabulary:
   iterations). **Not yet re-run against the real dataset**: the 302-row DC
   portion of `compact_opf_validation_summary.csv` still has `pm_solve_
   iterations = NaN` until the DC sweep is next run with `--models=dc`.
-- **Python never captures PowerModels' solver-iteration count**, for either
-  AC or DC — Python's comparison reads pre-exported static reference JSON
-  rather than solving PowerModels in-process, and that JSON doesn't carry
-  iteration metadata. Would require a Julia-side change to the reference
-  export script (`08_run_ac_opf_powermodels_references.jl`) to include it.
+- ~~Python never captures PowerModels' solver-iteration count~~ **Implemented
+  (2026-07-10).** The actual export scripts Python's 3-case validation reads
+  are `julia/tools/powermodels/scripts/07_export_ac_opf_reference.jl` (AC)
+  and `06_export_dc_opf_reference.jl` (DC) — a different, smaller pipeline
+  from the "compact sweep" exporter (`08_run_ac_opf_powermodels_references.jl`)
+  previously (incorrectly) named here. Both now use `instantiate_model`/
+  `optimize_model!` (same pattern as §1.2/§6 item 1 above) with a local
+  `safe_barrier_iterations`/`safe_simplex_iterations` helper, adding a
+  `"solve_iterations"` field to the exported `*_reference.json`. Python's
+  `compare_ac_with_powermodels.py`/`compare_with_powermodels.py` now read
+  that field instead of hardcoding `NaN`. Re-exported all 15 case/scenario
+  JSON pairs for both AC and DC; verified end-to-end via
+  `python_{ac,dc}_solver_iterations.png` now showing real PowerModels bars.
+  Two bugs found and fixed in the process, both worth remembering:
+  1. The non-converged-run filter in `plot_iteration_comparison` (§2) only
+     checked Julia's `own_solved`/`pm_solved` column names, silently not
+     applying to Python (which uses `own_success`/`pm_success`) — a
+     `case14_ieee` scenario with `pm_solve_iterations=3000` (iteration-cap
+     timeout, both sides failed) was contaminating the mean/whiskers exactly
+     like the Julia AC case did before that fix. Now checks both spellings.
+  2. Python's own DC-OPF `own_solve_iterations` was `NaN` for every
+     `case14_ieee`/`case30_ieee` scenario, even successfully-solved ones.
+     Root cause: HiGHS's presolve fully reduces these small DC-OPF LPs to
+     nothing before simplex ever runs ("Reduced to empty" in the solver
+     log), so the regex-based iteration-count parser
+     (`solver_iterations.py`) never found a "Simplex iterations" line to
+     match and fell back to `NaN` — but the true count is 0, not unknown.
+     Fixed to detect the presolve-to-empty case and return `0.0`. The
+     resulting zero-height bars are now labeled `"0"` explicitly in the
+     plot so they don't read as missing data.
 - **`compute_ac_pf`'s own iteration count is unavailable** in the LF
   replacement-note sweep (§4.2) — a different limitation from the two above,
   specific to bypassing the JuMP layer.
-- **`python_dc` has no large-scale objective/outcome/solve-time-vs-
-  PowerModels comparison plot set** — only the small 3-case × 5-scenario
-  comparison (used for §2's element-level tables) exists; there's no DC
-  equivalent of the 607-row Julia sweep or a `compact_dc_opf_sweeps_with_
-  powermodels_comparison.csv` for Python.
+- ~~`python_dc` has no large-scale objective/outcome/solve-time-vs-
+  PowerModels comparison plot set~~ **Implemented (2026-07-10), at small
+  scale.** There's still no DC equivalent of the 607-row Julia sweep or a
+  `compact_dc_opf_sweeps_with_powermodels_comparison.csv` for Python — but
+  `python_dc_vs_powermodels_{outcome_heatmap,objective_scatter,
+  solve_time_by_case}.png` now exist, built by reusing
+  `17_plot_opf_validation_findings.py`'s `classify_rows`/`make_plot_set`
+  (loaded into `18_plot_opf_variable_diffs.py` via `importlib`, since a
+  normal `import` of a digit-prefixed filename isn't possible) against the
+  existing small 3-case × 5-scenario comparison, normalized to that schema
+  via the new `normalize_python_dc_small_scale`. Titled "(3-case validation
+  set)" so it doesn't read as Julia-sweep-scale coverage. This also required
+  adding solve-time capture that didn't exist anywhere in this pipeline
+  before: own Python DC-OPF wall-clock time (`compare_with_powermodels.py`)
+  and PowerModels' DC wall-clock time (new `solve_time_sec` field in
+  `06_export_dc_opf_reference.jl`'s exported reference JSON, mirrored into
+  `07_export_ac_opf_reference.jl` for schema symmetry even though AC's
+  existing plot trio doesn't consume it). All 15 AC + 15 DC reference JSON
+  pairs re-exported to pick up both `solve_iterations` and `solve_time_sec`.
 - **PyPowSyBl operational controls (transformer/shunt/phase-shifter
   regulation) have no working demonstration on PGLib-derived cases** — the
   imported data structurally lacks the control metadata (§4.1). If this is
@@ -579,15 +628,18 @@ rather than letting this grow unbounded.
    populate `pm_solve_iterations` for DC in `compact_opf_validation_summary.csv`
    — the code fix landed (§6) but the dataset itself hasn't been regenerated
    yet.
-2. Decide whether Python needs its own PowerModels-iteration capture, or
-   whether that's low-value given Python's validation scope is already
-   limited to 3 small cases.
-3. Decide whether `python_dc` needs objective/outcome/solve-time plots at
-   Julia-DC scale, or whether the existing small-scale comparison is
-   sufficient for Python's intended scope.
-4. Decide whether the 1888_rte iteration-count finding (§2 — PowerModels
+2. Decide whether `python_dc` needs objective/outcome/solve-time plots at
+   *Julia-DC scale* (a real 302-row-equivalent sweep with a PowerModels
+   comparison) — the small-scale version now exists (§6), this item is only
+   about whether the bigger pipeline is worth building.
+3. Decide whether the 1888_rte iteration-count finding (§2 — PowerModels
    needs *fewer* iterations than the own model on the two largest cases,
    opposite of the mid-size trend) warrants its own investigation.
+4. Investigate why the own Python DC-OPF formulation presolves to nothing on
+   `case14_ieee`/`case30_ieee` (0 simplex iterations) while PowerModels'
+   formulation of the same cases needs 18-35 — worth understanding whether
+   that's a meaningful formulation difference or just presolve-friendliness
+   (§6).
 5. Decide whether operational-control metadata for PGLib cases is worth
    building, or whether native-network demonstrations (§4.1) are sufficient
    evidence for the thesis/presentation purpose.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -210,6 +211,7 @@ def ac_opf_powermodels_comparison_summary(
     branch_rows: pd.DataFrame,
     *,
     scenario: str,
+    own_solve_time_sec: float = np.nan,
 ) -> pd.DataFrame:
     own_class = classify_python_ac_outcome(own_result)
     pm_class = classify_powermodels_ac_outcome(reference)
@@ -288,7 +290,9 @@ def ac_opf_powermodels_comparison_summary(
         "max_thermal_violation": own_result.max_thermal_violation,
         "max_angle_violation": own_result.max_angle_violation,
         "own_solve_iterations": getattr(own_result, "solve_iterations", np.nan),
-        "pm_solve_iterations": np.nan,
+        "pm_solve_iterations": np.nan if reference.get("solve_iterations") is None else reference["solve_iterations"],
+        "own_solve_time_sec": own_solve_time_sec,
+        "pm_solve_time_sec": np.nan if reference.get("solve_time_sec") is None else reference["solve_time_sec"],
     }
     row.update(binding_counts)
 
@@ -310,7 +314,9 @@ def run_python_ac_opf_against_powermodels(
     # cost_power_units="pu" and case-native voltage bounds (voltage_bounds=None) match
     # PowerModels.jl's conventions; solve_ac_opf_pyomo's own defaults ("mw", (0.95, 1.05))
     # are tuned for standalone use and inflate the objective ~100x vs PowerModels otherwise.
+    solve_start = time.time()
     own_result = solve_ac_opf_pyomo(case, cost_power_units="pu", voltage_bounds=None)
+    own_solve_time_sec = time.time() - solve_start
 
     generator_rows = compare_ac_opf_generators_with_powermodels(case, own_result, reference)
     bus_rows = compare_ac_opf_buses_with_powermodels(case, own_result, reference)
@@ -323,6 +329,7 @@ def run_python_ac_opf_against_powermodels(
         bus_rows,
         branch_rows,
         scenario=scenario,
+        own_solve_time_sec=own_solve_time_sec,
     )
 
     return {

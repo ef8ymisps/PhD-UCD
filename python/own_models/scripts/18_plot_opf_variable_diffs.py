@@ -29,6 +29,7 @@ are not available there without a further PowerModels export-pipeline change.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 import re
 import sys
@@ -57,6 +58,23 @@ from own_models.src.analysis.violations import (  # noqa: E402
     classify_dc_branch_rows,
     classify_dc_generator_rows,
 )
+
+
+def _load_script17():
+    """Load 17_plot_opf_validation_findings.py as a module via importlib
+    (rather than duplicating its classify_rows/plot_outcome_heatmap/
+    plot_objective_scatter/plot_solve_time_by_case/make_plot_set logic here)
+    -- a normal `import` isn't possible since the filename starts with a
+    digit."""
+    spec = importlib.util.spec_from_file_location(
+        "script17_plot_opf_validation_findings", SCRIPT_DIR / "17_plot_opf_validation_findings.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+script17 = _load_script17()
 
 CASES = ["pglib_opf_case5_pjm", "pglib_opf_case14_ieee", "pglib_opf_case30_ieee"]
 SCENARIOS = ["base", "relaxed", "branch_congested", "generator_limited", "load_scaled"]
@@ -239,6 +257,35 @@ def _persist_detail_rows(detail_dir: Path, model: str, case: str, scenario: str,
         _append_csv(detail_dir / "dc_generators.csv", generator_rows)
         _append_csv(detail_dir / "dc_buses.csv", bus_rows)
         _append_csv(detail_dir / "dc_branches.csv", branch_rows)
+
+
+# Matches 17_plot_opf_validation_findings.py's own default, kept in sync
+# manually since the two scripts don't share a config module.
+OBJECTIVE_GAP_THRESHOLD = 1e-3
+
+
+def normalize_python_dc_small_scale(frame: pd.DataFrame, objective_gap_threshold: float = OBJECTIVE_GAP_THRESHOLD) -> pd.DataFrame:
+    """Adapt collect_python_summaries's DC frame (3 cases x 5 scenarios) to
+    the schema script17's classify_rows/plot_outcome_heatmap/
+    plot_objective_scatter/plot_solve_time_by_case expect. Python DC has no
+    large-scale PowerModels-compared sweep CSV the way AC and Julia do (see
+    module docstring) -- this is that small validation set standing in, so
+    the resulting plots are labelled accordingly rather than implying
+    Julia-sweep-scale coverage."""
+    work = frame.copy()
+    work["base_case"] = work["case_name"].map(shorten_case_name)
+    work["model"] = "dc_python"
+    work["own_status"] = work["own_status"].astype(str)
+    work["pm_status"] = work["pm_status"].astype(str)
+    work["own_solved_norm"] = work["own_success"].astype(bool)
+    work["pm_solved_norm"] = work["pm_success"].astype(bool)
+    work["outcome_match_norm"] = work["outcome_match"].astype(bool)
+    work["own_objective_norm"] = pd.to_numeric(work["own_objective"], errors="coerce")
+    work["pm_objective_norm"] = pd.to_numeric(work["pm_objective"], errors="coerce")
+    work["objective_rel_diff_norm"] = pd.to_numeric(work["objective_rel_diff"], errors="coerce").abs()
+    work["own_solve_time_norm"] = pd.to_numeric(work.get("own_solve_time_sec"), errors="coerce")
+    work["pm_solve_time_norm"] = pd.to_numeric(work.get("pm_solve_time_sec"), errors="coerce")
+    return script17.classify_rows(work, objective_gap_threshold)
 
 
 def load_julia_summary(path: Path) -> pd.DataFrame | None:
@@ -601,12 +648,16 @@ def plot_iteration_comparison(frame: pd.DataFrame, title: str, output_path: Path
     # a timeout. Left in, a handful of these can single-handedly drag the mean
     # and blow out the min-max whiskers for an otherwise well-behaved case
     # (confirmed: every Julia AC row that hit the 3000-iteration cap had
-    # own_solved=False and pm_solved=False). Julia's summary has these as
-    # booleans; Python's summary doesn't carry them, so this is a no-op there.
-    if "own_solved" in solved.columns:
-        solved = solved[solved["own_solved"].astype(bool)]
-    if "pm_solved" in solved.columns:
-        solved = solved[solved["pm_solved"].astype(bool)]
+    # own_solved=False and pm_solved=False; same pattern found in Python's
+    # case14_ieee load_scaled scenario -- own_success=False, pm_success=False,
+    # pm_solve_iterations=3000). Julia's summary uses own_solved/pm_solved;
+    # Python's uses own_success/pm_success -- check both spellings.
+    for own_col in ("own_solved", "own_success"):
+        if own_col in solved.columns:
+            solved = solved[solved[own_col].astype(bool)]
+    for pm_col in ("pm_solved", "pm_success"):
+        if pm_col in solved.columns:
+            solved = solved[solved[pm_col].astype(bool)]
     if solved.empty:
         return
 
@@ -632,6 +683,19 @@ def plot_iteration_comparison(frame: pd.DataFrame, title: str, output_path: Path
     fig, ax = plt.subplots(figsize=(max(7.0, 0.85 * len(case_order) + 2.0), 4.8))
     x = np.arange(len(case_order))
     errorbar_kwargs = dict(fmt="none", ecolor="#111827", elinewidth=1.0, capsize=3, capthick=1.0)
+
+    def _label_zero_bars(x_positions: np.ndarray, means: np.ndarray) -> None:
+        # A genuinely-zero mean (solver's presolve fully solved the problem,
+        # 0 simplex iterations needed -- confirmed on Python DC OPF for
+        # case14_ieee/case30_ieee) draws as an invisible zero-height bar,
+        # indistinguishable from missing data. Label it explicitly.
+        for xi, mean in zip(x_positions, means):
+            if np.isfinite(mean) and mean == 0:
+                ax.annotate(
+                    "0", xy=(xi, 0), xytext=(0, 3), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=8.5, color="#111827",
+                )
+
     if has_pm:
         width = 0.36
         ax.bar(x - width / 2, own_stats["mean"].to_numpy(), width=width, color="#2563eb", label="Own model")
@@ -639,9 +703,12 @@ def plot_iteration_comparison(frame: pd.DataFrame, title: str, output_path: Path
         ax.bar(x + width / 2, pm_stats["mean"].to_numpy(), width=width, color="#f97316", label="PowerModels")
         ax.errorbar(x + width / 2, pm_stats["mean"].to_numpy(), yerr=_min_max_whiskers(pm_stats), **errorbar_kwargs)
         ax.legend(frameon=False)
+        _label_zero_bars(x - width / 2, own_stats["mean"].to_numpy())
+        _label_zero_bars(x + width / 2, pm_stats["mean"].to_numpy())
     else:
         ax.bar(x, own_stats["mean"].to_numpy(), color="#2563eb", label="Own model")
         ax.errorbar(x, own_stats["mean"].to_numpy(), yerr=_min_max_whiskers(own_stats), **errorbar_kwargs)
+        _label_zero_bars(x, own_stats["mean"].to_numpy())
         ax.annotate(
             "PowerModels iteration count not available for this data source",
             xy=(0.5, 0.95),
@@ -985,6 +1052,17 @@ def main() -> None:
         plot_binding_mismatch_heatmap(
             python_dc_binding, "Python DC OPF vs PowerModels: binding-constraint mismatches by case and scenario",
             args.output_dir / "python_dc_binding_mismatch_heatmap.png", args.dpi,
+        )
+        # python_ac/julia_ac/julia_dc all get an outcome/objective/solve-time
+        # plot trio from 17_plot_opf_validation_findings.py's make_plot_set,
+        # sourced from a large PowerModels-compared sweep CSV. No DC
+        # equivalent of that sweep exists for Python (module docstring) --
+        # this reuses the same plot functions against the smaller 3-case x
+        # 5-scenario set instead, closing that gap at a smaller scale.
+        python_dc_small_scale = normalize_python_dc_small_scale(python_dc)
+        script17.make_plot_set(
+            python_dc_small_scale, "python_dc_vs_powermodels",
+            "Python DC OPF vs PowerModels (3-case validation set)", args.output_dir, args.dpi,
         )
 
     python_ac_tables = load_detail_tables(args.python_detail_dir, "ac")

@@ -92,6 +92,18 @@ function solved_status(status)
     return status_text in ["OPTIMAL", "LOCALLY_SOLVED", "ALMOST_OPTIMAL", "ALMOST_LOCALLY_SOLVED"]
 end
 
+"""Best-effort Ipopt barrier iteration count; NaN if unavailable. Local copy
+of the same helper used in julia/own_models/src/opf/ac/results.jl -- this
+script is a standalone tool outside the OwnPowerModels module, so it doesn't
+pull in that dependency just for this."""
+function safe_barrier_iterations(model::JuMP.Model)
+    try
+        return Float64(JuMP.barrier_iterations(model))
+    catch
+        return NaN
+    end
+end
+
 function safe_get(d, keys...; default = nothing)
     current = d
     for key in keys
@@ -104,7 +116,7 @@ function safe_get(d, keys...; default = nothing)
     return current
 end
 
-function reference_payload(case_name, scenario_name, data, result)
+function reference_payload(case_name, scenario_name, data, result, solve_iterations::Float64, solve_time_sec::Float64)
     solution = get(result, "solution", Dict{String, Any}())
     status = string(get(result, "termination_status", "UNKNOWN"))
     solved = solved_status(status)
@@ -154,6 +166,8 @@ function reference_payload(case_name, scenario_name, data, result)
         "termination_status" => status,
         "solved" => solved,
         "objective" => get(result, "objective", nothing),
+        "solve_iterations" => isfinite(solve_iterations) ? solve_iterations : nothing,
+        "solve_time_sec" => isfinite(solve_time_sec) ? solve_time_sec : nothing,
         "generators" => generators,
         "buses" => buses,
         "branches" => branches,
@@ -194,14 +208,26 @@ function export_reference(case_name, scenario, case_dir, output_dir)
     modified = apply_scenario(data, scenario)
 
     optimizer = optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0)
-    result = PowerModels.solve_ac_opf(modified, optimizer)
+    # instantiate_model + optimize_model! (rather than the solve_ac_opf
+    # convenience wrapper) so the underlying JuMP model stays reachable for
+    # barrier_iterations -- same pattern used in
+    # julia/own_models/scripts/09_run_compact_opf_validation_sweeps.jl to
+    # backfill PowerModels' own iteration count on the Julia AC OPF sweep.
+    solve_start = time()
+    pm = PowerModels.instantiate_model(modified, ACPPowerModel, PowerModels.build_opf)
+    result = PowerModels.optimize_model!(pm, optimizer=optimizer)
+    solve_time_sec = time() - solve_start
+    solve_iterations = safe_barrier_iterations(pm.model)
 
     stem = replace(case_name, ".m" => "")
     case_json_path = joinpath(output_dir, stem * "_" * scenario_name * "_case.json")
     reference_json_path = joinpath(output_dir, stem * "_" * scenario_name * "_reference.json")
 
     write_json(case_json_path, modified)
-    write_json(reference_json_path, reference_payload(case_name, scenario_name, modified, result))
+    write_json(
+        reference_json_path,
+        reference_payload(case_name, scenario_name, modified, result, solve_iterations, solve_time_sec),
+    )
 
     println("Exported ", stem, " / ", scenario_name, " -> ", reference_json_path)
 end
