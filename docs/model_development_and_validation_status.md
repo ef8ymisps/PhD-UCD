@@ -461,12 +461,13 @@ workflow to the JuMP-based path, trading away the speed advantage.
 
 ### Artifact index (§4.2)
 
-- `docs/powermodels_lf_replacement_sweep.md` (and its 4 near-duplicate
-  siblings `_api.md`, `_base_large.md`, `_mixed_full.md`, `_sad.md` — same
-  narrative, different case-set/run numbers; worth consolidating into one
-  doc with a comparison table rather than 5 separate files).
-- `results/presentable/powermodels_lf_replacement_sweep/powermodels_ac_pf_sweep_rows.csv`,
-  `powermodels_dc_pf_sweep_rows.csv`.
+- `docs/powermodels_lf_replacement_sweep.md` — consolidated (2026-07-10) from
+  5 near-duplicate per-run write-ups into one doc with a per-run comparison
+  table (`base`, `api`, `base_large`, `mixed_full`, `sad` — the last two
+  turned out to be a reproducibility check that passed, not a leftover
+  duplicate).
+- `results/presentable/powermodels_lf_replacement_sweep/<run>/powermodels_ac_pf_sweep_rows.csv`,
+  `powermodels_dc_pf_sweep_rows.csv` (one set per run, see the doc above).
 - `julia/own_models/src/analysis/ac_pf_compute_validation.jl`
   (`run_powermodels_ac_pf_compute` — the wrapper used for N-1, §3).
 
@@ -523,13 +524,15 @@ To avoid conflating two different things that share vocabulary:
 
 ## 6. Known limitations / open items
 
-- **PowerModels' AC solver-iteration comparison currently AC-only.** Julia
-  DC (`compute_ac_pf`'s sibling code path via `optimize_model!`) could
-  capture PowerModels' `simplex_iterations` the same way AC captures
-  `barrier_iterations` (§1.2) — the mechanism already exists in the
-  codebase (`_safe_simplex_iterations`, confirmed generic MOI-based, same
-  pattern as the AC backfill done this session) and just hasn't been wired
-  into the DC branch of `09_run_compact_opf_validation_sweeps.jl` yet.
+- **PowerModels' DC solver-iteration capture: code fixed, dataset not yet
+  backfilled.** `09_run_compact_opf_validation_sweeps.jl`'s DC branch was
+  silently reusing `_safe_barrier_iterations` (Ipopt-specific) on a
+  HiGHS-solved model, always returning `NaN`. Fixed to use
+  `_safe_simplex_iterations` (mirroring the AC pattern, §1.2) — verified via
+  a 2-scenario smoke test on `case5_pjm`, real values returned (5, 4
+  iterations). **Not yet re-run against the real dataset**: the 302-row DC
+  portion of `compact_opf_validation_summary.csv` still has `pm_solve_
+  iterations = NaN` until the DC sweep is next run with `--models=dc`.
 - **Python never captures PowerModels' solver-iteration count**, for either
   AC or DC — Python's comparison reads pre-exported static reference JSON
   rather than solving PowerModels in-process, and that JSON doesn't carry
@@ -557,13 +560,12 @@ To avoid conflating two different things that share vocabulary:
   authoritative pypowsybl/compute_ac_pf N-1 results (§3).
 - **N-1 security screening has only been run on case118** — not extended to
   other case sizes.
-- **The 5 `docs/powermodels_lf_replacement_sweep*.md` files are near-
-  duplicates** of each other (same narrative template, different case-
-  set/run numbers) and could be consolidated into one document with a
-  results-comparison table.
-- **`docs/notes/pypowsybl_data_format.md`** is currently an empty stub; if
-  network-table/result-structure notes are written up, that's the natural
-  home for them (distinct from this file's experiment-level summary).
+- If PyPowSyBl network-table/result-structure notes are ever written up,
+  `docs/notes/` (see `neutral_data_format.md`, `powermodels_data_format.md`
+  for the existing sibling docs' style) is the natural home — distinct from
+  this file's experiment-level summary. (The old empty-stub placeholder for
+  this, `docs/notes/pypowsybl_data_format.md`, was removed when this file
+  replaced it and `docs/roadmap.md`, 2026-07-10.)
 
 ---
 
@@ -572,8 +574,11 @@ To avoid conflating two different things that share vocabulary:
 Living checklist — prune items once done, add new ones as they come up,
 rather than letting this grow unbounded.
 
-1. Decide whether the PowerModels-DC iteration-count backfill (§6, item 1)
-   is worth doing now, given the mechanism is already proven for AC.
+1. Re-run the DC sweep (`--models=dc --overwrite`, or the same surgical
+   strip-DC-rows-then-rerun approach used for the AC backfill) to actually
+   populate `pm_solve_iterations` for DC in `compact_opf_validation_summary.csv`
+   — the code fix landed (§6) but the dataset itself hasn't been regenerated
+   yet.
 2. Decide whether Python needs its own PowerModels-iteration capture, or
    whether that's low-value given Python's validation scope is already
    limited to 3 small cases.
@@ -586,9 +591,7 @@ rather than letting this grow unbounded.
 5. Decide whether operational-control metadata for PGLib cases is worth
    building, or whether native-network demonstrations (§4.1) are sufficient
    evidence for the thesis/presentation purpose.
-6. Consolidate the 5 near-duplicate `powermodels_lf_replacement_sweep*.md`
-   files (§6) when there's a natural opportunity.
-7. Extend N-1 security screening beyond case118 if broader coverage is
+6. Extend N-1 security screening beyond case118 if broader coverage is
    needed.
 
 ---
@@ -609,7 +612,7 @@ rather than letting this grow unbounded.
 **Load-flow experiments**: `results/presentable/pypowsybl_lf_replacement_sweep/`
 (esp. `presentation_findings/pypowsybl_lf_convergence_findings_for_presentation.md`
 and `baseline_problem_case_analysis/advanced_configuration_plan.md`),
-`docs/powermodels_lf_replacement_sweep.md` (+ 4 near-duplicate siblings),
+`docs/powermodels_lf_replacement_sweep.md`,
 `results/presentable/powermodels_lf_replacement_sweep/`
 
 **Formulation background**: `docs/formulations/pf_vs_opf_taxonomy.md`,

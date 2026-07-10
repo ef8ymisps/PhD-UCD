@@ -799,7 +799,13 @@ function run_one_model(entry, model::Symbol; ac_optimizer, dc_optimizer, fix_ref
         try
             pm = PowerModels.instantiate_model(deepcopy(entry.data), DCPPowerModel, PowerModels.build_opf)
             pm_result = PowerModels.optimize_model!(pm, optimizer=dc_optimizer)
-            pm_iterations = OwnPowerModels._safe_barrier_iterations(pm.model)
+            # DC is solved by HiGHS (simplex), not Ipopt (barrier) -- reusing
+            # _safe_barrier_iterations here (as AC does) would always return
+            # NaN silently, since HiGHS doesn't support MOI.BarrierIterations.
+            # own_solve_dc_opf's own iteration count already uses the correct
+            # simplex counterpart (results.jl::_safe_simplex_iterations); this
+            # mirrors that for PowerModels' side of the DC comparison.
+            pm_iterations = OwnPowerModels._safe_simplex_iterations(pm.model)
         catch err
             pm_error = sprint(showerror, err)
         finally
