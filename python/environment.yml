@@ -1,0 +1,17 @@
+name: power-systems-learning
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - pandas<3
+  - scipy
+  - jupyterlab
+  # AC-OPF (Pyomo) needs the ipopt binary on PATH. Declared here explicitly --
+  # on the original dev machine this was only working by accident because
+  # ipopt happened to be installed in the base conda env, whose Library/bin
+  # was on system PATH. Do not rely on that on a fresh machine.
+  - ipopt
+  - pip:
+      - -r requirements.txt

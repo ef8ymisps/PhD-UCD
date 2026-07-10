@@ -1,0 +1,9 @@
+numpy
+pandas<3
+scipy
+pyomo
+highspy
+jupyterlab
+pypowsybl
+matpowercaseframes
+matplotlib

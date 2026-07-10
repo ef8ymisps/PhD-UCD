@@ -1,0 +1,32 @@
+[
+  {
+    "name": "base",
+    "type": "base"
+  },
+  {
+    "name": "relaxed",
+    "type": "relaxed",
+    "branch_rate_multiplier": 10.0,
+    "generator_limit_multiplier": 10.0,
+    "voltage_lower": 0.5,
+    "voltage_upper": 1.5
+  },
+  {
+    "name": "branch_congested",
+    "type": "branch_congested",
+    "branch_id": "1",
+    "rate_multiplier": 0.8
+  },
+  {
+    "name": "generator_limited",
+    "type": "generator_limited",
+    "gen_id": "1",
+    "pmax_multiplier": 0.5
+  },
+  {
+    "name": "load_scaled",
+    "type": "load_scaled",
+    "load_multiplier": 1.2,
+    "scale_reactive": true
+  }
+]
