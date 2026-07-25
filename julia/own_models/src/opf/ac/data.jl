@@ -4,17 +4,17 @@
 # variables are polar voltage magnitude and angle.
 
 using LinearAlgebra
+using SparseArrays
 
 struct ACOPFData
     bus_ids::Vector{String}
     branch_ids::Vector{String}
     gen_ids::Vector{String}
-    Ybus::Matrix{ComplexF64}
-    G::Matrix{Float64}
-    B::Matrix{Float64}
-    ybus_row_terms::Dict{String, Vector{Tuple{String, Float64, Float64}}}
+    Ybus::SparseMatrixCSC{ComplexF64, Int}
     pd_by_bus::Dict{String, Float64}
     qd_by_bus::Dict{String, Float64}
+    gs_by_bus::Dict{String, Float64}
+    bs_by_bus::Dict{String, Float64}
     gens_by_bus::Dict{String, Vector{String}}
     active_branches::Vector{Branch}
     active_generators::Vector{Generator}
@@ -29,7 +29,6 @@ function build_ac_opf_data(case::PowerCase)
     branch_ids = [branch.id for branch in active_branches]
 
     Ybus = build_ybus(case)
-    ybus_row_terms = nonzero_ybus_row_terms(Ybus, bus_ids)
     pd_by_bus = Dict(bus.id => 0.0 for bus in case.buses)
     qd_by_bus = Dict(bus.id => 0.0 for bus in case.buses)
 
@@ -37,6 +36,21 @@ function build_ac_opf_data(case::PowerCase)
         if load.status == 1
             pd_by_bus[load.bus] += load.pd
             qd_by_bus[load.bus] += load.qd
+        end
+    end
+
+    # Bus-shunt-only aggregates (branch charging is NOT included here -- it's
+    # already folded into each branch's own Yff/Ytt in
+    # ac_branch_admittance_terms, so it belongs to the arc-based
+    # formulation's per-branch equations, not the bus balance). Needed by
+    # the nodal power balance (add_ac_power_balance! in model.jl), which
+    # sums directed arc flows rather than a full nodal Ybus row.
+    gs_by_bus = Dict(bus.id => 0.0 for bus in case.buses)
+    bs_by_bus = Dict(bus.id => 0.0 for bus in case.buses)
+    for shunt in case.shunts
+        if shunt.status == 1
+            gs_by_bus[shunt.bus] += shunt.gs
+            bs_by_bus[shunt.bus] += shunt.bs
         end
     end
 
@@ -50,25 +64,12 @@ function build_ac_opf_data(case::PowerCase)
         branch_ids,
         gen_ids,
         Ybus,
-        real.(Ybus),
-        imag.(Ybus),
-        ybus_row_terms,
         pd_by_bus,
         qd_by_bus,
+        gs_by_bus,
+        bs_by_bus,
         gens_by_bus,
         active_branches,
         active_generators
     )
-end
-
-"""Return nonzero Ybus row terms as bus => [(other_bus, G, B), ...]."""
-function nonzero_ybus_row_terms(Ybus, bus_ids)
-    row_terms = Dict{String, Vector{Tuple{String, Float64, Float64}}}()
-    for (i, bus_id) in enumerate(bus_ids)
-        row_terms[bus_id] = [
-            (bus_ids[j], real(Ybus[i, j]), imag(Ybus[i, j]))
-            for j in findall(!iszero, @view Ybus[i, :])
-        ]
-    end
-    return row_terms
 end

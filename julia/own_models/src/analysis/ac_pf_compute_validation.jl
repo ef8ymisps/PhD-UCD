@@ -118,13 +118,57 @@ function _extract_pm_branches(result::Dict)
     return DataFrame(rows)
 end
 
+"""select_largest_component! only sets bus_type=4 on isolated buses -- it
+does not deactivate generators/loads/shunts still attached to them, which
+makes PowerModels.compute_ac_pf's instantiate_pf_data hit `@assert false`
+(a generator with gen_status=1 on a bus_type that's neither 3 nor 2). Turn
+off everything attached to a bus_type==4 bus so the solve only ever sees a
+self-consistent (in-service component, in-service equipment) subset."""
+function _deactivate_equipment_on_isolated_buses!(data::Dict)
+    isolated_bus_ids = Set(bus["bus_i"] for (_, bus) in data["bus"] if bus["bus_type"] == 4)
+    isempty(isolated_bus_ids) && return
+    for (_, gen) in data["gen"]
+        gen["gen_bus"] in isolated_bus_ids && (gen["gen_status"] = 0)
+    end
+    for (_, load) in data["load"]
+        load["load_bus"] in isolated_bus_ids && (load["status"] = 0)
+    end
+    for (_, shunt) in data["shunt"]
+        shunt["shunt_bus"] in isolated_bus_ids && (shunt["status"] = 0)
+    end
+end
+
+"""Run PowerModels.compute_ac_pf, with island handling.
+
+`drop_islands=true` (default) calls PowerModels.jl's own
+`select_largest_component!` on the data before solving -- "determines the
+largest connected component of the network and turns everything else off"
+(sets bus_type=4/isolated on everything outside it; `_deactivate_equipment_on_isolated_buses!`
+then turns off gens/loads/shunts there too, since compute_ac_pf's
+instantiate_pf_data asserts on an in-service generator attached to a
+bus_type it doesn't recognize). This matters for N-1 screening
+specifically: a branch outage that fully disconnects a bus still carrying
+real load/generation makes a single-slack NR solve mathematically
+singular, so it never converges -- not because the contingency is severe,
+but because the solver was asked to solve an unsolvable system.
+pypowsybl/OpenLoadFlow does this island-dropping automatically;
+PowerModels.compute_ac_pf does not unless told to. On a fully-connected
+network (the normal validation-pipeline case) this is a no-op --
+`select_largest_component!` finds one component and turns nothing off. See
+docs/model_development_and_validation_status.md §7 item 9 for the case118
+N-1 screening investigation that found this gap."""
 function run_powermodels_ac_pf_compute(
     data;
     nlsolve_kwargs = Dict{Symbol,Any}(),
     calc_branch_flows::Bool = true,
     start_mode::Symbol = :powermodels_default,
+    drop_islands::Bool = true,
 )
     data_copy = deepcopy(data)
+    if drop_islands
+        PowerModels.select_largest_component!(data_copy)
+        _deactivate_equipment_on_isolated_buses!(data_copy)
+    end
     kwargs = _merge_compute_pf_kwargs(start_mode, Dict{Symbol,Any}(nlsolve_kwargs))
 
     result = try

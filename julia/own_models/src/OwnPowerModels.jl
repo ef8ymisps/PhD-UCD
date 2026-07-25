@@ -25,6 +25,12 @@ include("analysis/ac_opf_validation.jl")
 include("analysis/ac_pf_compute_validation.jl")
 include("analysis/n1_screening.jl")
 
+# DC-SCOPF scaffold (data structures + contingency enumeration only, no
+# model builder yet) -- must load after n1_screening.jl (reuses
+# N1Contingency/generate_*_n1_contingencies) and opf/dc/dc.jl (reuses
+# DCOPFData/build_dc_opf_data). See docs/formulations/dc_scopf.md.
+include("opf/dc_scopf/data.jl")
+
 export PowerCase
 export load_powercase_from_powermodels
 export solve_dc_power_flow
@@ -33,6 +39,8 @@ export solve_ac_power_flow_newton
 export solve_ac_power_flow_with_q_limits
 export solve_dc_opf_own
 export solve_ac_opf_own
+export build_dc_opf_model
+export build_ac_opf_model
 export get_powermodels_branch_flows
 export compare_branch_flows_with_powermodels
 export compare_with_powermodels
@@ -108,5 +116,9 @@ export run_n1_branch_screening
 export run_n1_generator_screening
 export run_n1_screening
 export case_with_base_dispatch_own_ac
+export DCSCOPFContingencyData
+export DCSCOPFData
+export build_dc_scopf_contingency_data
+export build_dc_scopf_data
 
 end

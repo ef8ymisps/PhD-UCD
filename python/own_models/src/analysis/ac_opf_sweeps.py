@@ -14,7 +14,7 @@ import pandas as pd
 from own_models.src.adapters.matpower_adapter import load_powercase_from_matpower_mat
 from own_models.src.analysis.contingencies import apply_branch_outage, apply_generator_outage
 from own_models.src.data.case import Branch, Generator, Load, PowerCase
-from own_models.src.opf.ac.solve import solve_ac_opf_pyomo
+from own_models.src.opf.ac.model import solve_ac_opf_pyomo
 
 
 DEFAULT_SETTINGS = {
@@ -36,7 +36,15 @@ DEFAULT_SETTINGS = {
     "generator_outage_top_k_pg": 2,
     "voltage_bounds": None,
     "objective_type": "generation_cost",
-    "warm_start": "case",
+    # "model_variant" is now a cosmetic label only (bus-injection was
+    # deleted; solve_ac_opf_pyomo is the sole AC-OPF model) -- kept for CSV
+    # schema compatibility with historical output.
+    "model_variant": "pm_like_zero",
+    # The compact validation sweep uses a flat voltage/reactive start by
+    # default. On case1888_rte's generator-114 outage, the old case-file start
+    # drove Ipopt to a locally infeasible point, while this start reproduced
+    # the PowerModels objective quickly; see script 29 and the debug CSV.
+    "warm_start": "flat",
     # Explicitly pinned rather than left to Ipopt's own default (verified
     # empirically via `ipopt --print_options_documentation`: Ipopt 3.14.19's
     # actual default max_iter is already 3000, not 500 as an earlier version
@@ -111,7 +119,7 @@ def iter_compact_ac_validation(
         case,
         scenario="base",
     ):
-        yield _strip_result(base)
+        yield base if cfg.get("keep_raw_result") else _strip_result(base)
         completed_scenario_keys.add(compact_ac_scenario_key(base))
 
     if base_result is None:
@@ -367,7 +375,7 @@ def _run_if_needed(
         fix_reference_angle=fix_reference_angle,
         metadata=metadata,
     )
-    yield _strip_result(row)
+    yield row if settings.get("keep_raw_result") else _strip_result(row)
     completed_scenario_keys.add(compact_ac_scenario_key(row))
 
 
@@ -720,8 +728,15 @@ def _run_case(
     metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     start = time.perf_counter()
+    # "model_variant" is now a cosmetic label only -- solve_ac_opf_pyomo is
+    # the sole AC-OPF model (bus-injection was deleted).
+    model_variant = str(settings.get("model_variant", "pm_like_zero"))
+    solver = solve_ac_opf_pyomo
+    row_metadata = {"model_variant": model_variant}
+    if metadata:
+        row_metadata.update(metadata)
     try:
-        result = solve_ac_opf_pyomo(
+        result = solver(
             case,
             cost_power_units=cost_power_units,
             objective_type=str(settings["objective_type"]),
@@ -745,9 +760,10 @@ def _run_case(
                 parameter_value=parameter_value,
                 base_result=base_result,
                 solve_time_sec=solve_time_sec,
-                metadata=metadata,
+                metadata=row_metadata,
             ),
             "result": result,
+            "case": case,
         }
     except Exception as exc:
         solve_time_sec = time.perf_counter() - start
@@ -761,9 +777,10 @@ def _run_case(
                 parameter_name=parameter_name,
                 parameter_value=parameter_value,
                 solve_time_sec=solve_time_sec,
-                metadata=metadata,
+                metadata=row_metadata,
             ),
             "result": None,
+            "case": case,
         }
 
 
@@ -999,4 +1016,5 @@ def _add_metadata(row: dict[str, object], metadata: dict[str, object] | None) ->
 def _strip_result(row: dict[str, object]) -> dict[str, object]:
     clean = dict(row)
     clean.pop("result", None)
+    clean.pop("case", None)
     return clean

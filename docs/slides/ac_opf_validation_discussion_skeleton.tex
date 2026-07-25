@@ -1,0 +1,318 @@
+\documentclass[10pt,aspectratio=169]{beamer}
+
+\usetheme{Madrid}
+\usecolortheme{default}
+\usefonttheme{professionalfonts}
+
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{AC OPF Validation Discussion}
+\subtitle{Own Julia/Python Models vs PowerModels}
+\author{Efthymis}
+\date{July 2026}
+
+\newcommand{\meetingroot}{../../results/own_vs_powermodels/_organized_for_meeting}
+\newcommand{\tbl}[2]{\href{run:\meetingroot/#1}{\beamergotobutton{#2}}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{frame}{AC OPF Validation Discussion}
+\small
+\textbf{Own Julia/Python models vs PowerModels}
+
+\vspace{0.5em}
+\begin{itemize}
+  \item We checked whether the suspicious objective differences are caused by missing terms or constraint violations.
+  \item We separated formulation effects, solver-status effects, load-flow consistency, and local-optimum behavior.
+  \item Main evidence comes from:
+    \begin{itemize}
+      \item solver diagnostics;
+      \item bus-shunt/formulation checks;
+      \item constrained deviation minimization;
+      \item equality-only deviation plus external inequality-level evaluation;
+      \item Julia endpoint load-flow validation with PowerModels Newton PF;
+      \item Python endpoint load-flow validation with PyPowSyBl/OpenLoadFlow;
+      \item Python current and PM-like validation status.
+    \end{itemize}
+\end{itemize}
+\vspace{0.4em}
+\tbl{00_overview/final_summary_julia_current.csv}{Julia current}
+\tbl{00_overview/final_summary_julia_pm_like.csv}{Julia PM-like}
+\tbl{00_overview/final_summary_python_current.csv}{Python current}
+\tbl{00_overview/final_summary_python_pm_like.csv}{Python PM-like}
+\tbl{01_objective_and_solver/objective_mismatch_summary_selected_models.csv}{Objective mismatches}
+\tbl{00_overview/significant_discrepancies.csv}{Significant discrepancies}
+\end{frame}
+
+\begin{frame}{Solver Status: What ALMOST\_LOCALLY\_SOLVED Means}
+\small
+\begin{itemize}
+  \item \code{LOCALLY\_SOLVED}: solver reports a local NLP solution satisfying the requested convergence checks.
+  \item \code{ALMOST\_LOCALLY\_SOLVED}: solver did not fully satisfy the strict desired termination checks, but reached an acceptable local solution under relaxed/acceptable tolerances.
+  \item It is not evidence of global optimality, and it is not automatically a bad result.
+  \item For validation, we therefore inspect:
+    \begin{itemize}
+      \item raw solver status and primal/dual status;
+      \item Ipopt original primal infeasibility \code{inf\_pr};
+      \item scaled dual infeasibility \code{inf\_du};
+      \item barrier parameter \code{mu};
+      \item iteration count and termination class.
+    \end{itemize}
+  \item In the Julia objective-mismatch diagnostic, visible Ipopt checks pass for the tested rows.
+\end{itemize}
+\vspace{0.4em}
+\tbl{01_objective_and_solver/solver_diagnostics_objective_mismatch_julia.csv}{Solver diagnostics}
+\tbl{01_objective_and_solver/solver_diagnostics_objective_mismatch_ipopt_iterations_julia.csv}{Ipopt trace}
+\tbl{01_objective_and_solver/solver_diagnostics_ipopt_notes_julia.csv}{Ipopt notes}
+\end{frame}
+
+\begin{frame}{Bus Shunts In The Current Formulation}
+\small
+\begin{itemize}
+  \item In the current bus-injection formulation, bus shunts enter through the diagonal of the admittance matrix.
+  \item The diagonal term is built as:
+\end{itemize}
+\[
+Y_{ii}
+=
+\sum_{\ell \in \delta(i)} y_{\ell,i}
++ g_i^{sh}
++ j b_i^{sh}.
+\]
+\begin{itemize}
+  \item Therefore the diagonal contribution to nodal injections is:
+\end{itemize}
+\[
+P_{ii}=G_{ii} V_i^2,
+\qquad
+Q_{ii}=-B_{ii} V_i^2.
+\]
+\begin{itemize}
+  \item Since \(G_{ii}\) and \(B_{ii}\) contain \(g_i^{sh}\) and \(b_i^{sh}\), the bus-shunt terms are already present in the current power balances.
+  \item Parallel branches are accumulated in \(Y_{ij}\), while branch limits remain per physical branch.
+\end{itemize}
+\vspace{0.4em}
+\tbl{05_shunt_and_formulation/power_balance_bus_shunt_term_locations.csv}{Shunt locations}
+\tbl{05_shunt_and_formulation/shunt_toggle_solution_summary_julia.csv}{Shunt toggle}
+\tbl{05_shunt_and_formulation/julia_parallel_branch_ybus_audit.csv}{Parallel branch audit}
+\end{frame}
+
+\begin{frame}{Current Model vs PM-like Model}
+\small
+\begin{itemize}
+  \item Current Julia model:
+    \begin{itemize}
+      \item bus-injection balance written directly from sparse \(Y_{\mathrm{bus}}\);
+      \item branch flows are nonlinear expressions used for thermal limits and reporting;
+      \item shunts are embedded in \(Y_{\mathrm{bus}}\).
+    \end{itemize}
+  \item PM-like Julia model:
+    \begin{itemize}
+      \item explicit directed branch-flow variables \(p_{ij}, q_{ij}\);
+      \item KCL written as sum of incident arc flows;
+      \item bus shunts written explicitly in the balance:
+    \end{itemize}
+\end{itemize}
+\[
+\sum p_{ij}
+=
+\sum P_g - P_d - g_i^{sh} V_i^2,
+\qquad
+\sum q_{ij}
+=
+\sum Q_g - Q_d + b_i^{sh} V_i^2.
+\]
+\begin{itemize}
+  \item PM-like was introduced to align the algebraic structure more closely with PowerModels ACP.
+\end{itemize}
+\vspace{0.4em}
+\tbl{03_performance/solve_performance_summary_julia_models.csv}{Performance}
+\tbl{01_objective_and_solver/objective_mismatch_details_julia_pm_like.csv}{PM-like objectives}
+\end{frame}
+
+\begin{frame}{Objective Mismatches: How I Diagnose Them}
+\small
+\begin{itemize}
+  \item First question: is the cheaper solution actually feasible?
+  \item Second question: is the PowerModels point feasible in my formulation?
+  \item Third question: are equality constraints or inequality levels responsible for the mismatch?
+  \item Diagnostic sequence:
+    \begin{enumerate}
+      \item check solver status and residuals;
+      \item compare binding constraints and margins;
+      \item run constrained deviation minimization toward PowerModels;
+      \item run equality-only deviation minimization toward PowerModels;
+      \item evaluate \(h(x,u)\) externally at the projected point;
+      \item run PowerModels Newton PF from both OPF endpoints.
+    \end{enumerate}
+  \item The aim is to distinguish formulation error from local-solver trajectory behavior.
+\end{itemize}
+\vspace{0.4em}
+\tbl{01_objective_and_solver/objective_mismatch_summary_julia_current.csv}{Current objective mismatch}
+\tbl{01_objective_and_solver/objective_mismatch_summary_julia_pm_like.csv}{PM-like objective mismatch}
+\tbl{01_objective_and_solver/objective_mismatch_summary_selected_models.csv}{Selected summary}
+\tbl{06_discrepancy_diagnosis/diagnostic_target_scenarios_details_selected_models.csv}{Selected targets}
+\tbl{02_binding_constraints/binding_constraint_mismatch_details_julia_current.csv}{Binding details}
+\end{frame}
+
+\begin{frame}{Constrained Deviation Minimization}
+\small
+\begin{itemize}
+  \item Diagnostic problem:
+\end{itemize}
+\[
+\min
+\left\lVert P_g-P_g^{PM}\right\rVert_1
++ \left\lVert Q_g-Q_g^{PM}\right\rVert_1
++ \left\lVert V-V^{PM}\right\rVert_1
++ \left\lVert \theta-\theta^{PM}\right\rVert_1
+\]
+\begin{itemize}
+  \item Subject to the full own AC OPF constraints, including inequalities.
+  \item Current model full variant:
+    \begin{itemize}
+      \item reaches the PowerModels point for the tested objective-mismatch rows;
+      \item zero binding mismatches in the full variant.
+    \end{itemize}
+  \item PM-like model full variant:
+    \begin{itemize}
+      \item reaches the PowerModels point for tested PM-like mismatch rows;
+      \item zero binding mismatches in the full variant.
+    \end{itemize}
+  \item Ablations help identify which terms matter, but the full formulation can represent the PowerModels point.
+\end{itemize}
+\vspace{0.4em}
+\tbl{07_deviation_minimization/current_constrained_deviation_minimization_julia.csv}{Current constrained}
+\tbl{07_deviation_minimization/current_constrained_deviation_binding_summary_julia.csv}{Current binding}
+\tbl{07_deviation_minimization/pm_like_constrained_deviation_minimization_julia.csv}{PM-like constrained}
+\tbl{07_deviation_minimization/pm_like_constrained_deviation_binding_summary_julia.csv}{PM-like binding}
+\tbl{07_deviation_minimization/deviation_minimization_variant_summary_selected_models.csv}{Variant summary}
+\end{frame}
+
+\begin{frame}{Equality-only Deviation And External \(h(\cdot)\) Levels}
+\small
+\begin{itemize}
+  \item Diagnostic problem:
+\end{itemize}
+\[
+\min
+\left\lVert x-x^{PM}\right\rVert_1
++ \left\lVert u-u^{PM}\right\rVert_1
+\quad
+\text{s.t. only } g(x,u)=0.
+\]
+\begin{itemize}
+  \item Inequalities \(h(x,u)\leq 0\) are not imposed in the solve.
+  \item After solving, inequality margins are evaluated externally:
+    \begin{itemize}
+      \item generator \(P/Q\) bounds;
+      \item voltage bounds;
+      \item branch thermal limits;
+      \item branch angle limits.
+    \end{itemize}
+  \item Julia finding:
+    \begin{itemize}
+      \item current and PM-like equality-only diagnostics reach the PowerModels point;
+      \item zero equality-only violations;
+      \item zero binding mismatches against PowerModels.
+    \end{itemize}
+\end{itemize}
+\vspace{0.4em}
+\tbl{07_deviation_minimization/equality_only_deviation_minimization_julia.csv}{Equality-only solves}
+\tbl{07_deviation_minimization/equality_only_deviation_inequality_levels_julia.csv}{h-levels}
+\tbl{07_deviation_minimization/equality_only_deviation_binding_summary_julia.csv}{Binding summary}
+\tbl{07_deviation_minimization/equality_only_vs_original_binding_reconciliation.csv}{Reconciliation}
+\end{frame}
+
+\begin{frame}{Load-flow Validation With PowerModels Newton PF}
+\small
+\begin{itemize}
+  \item Corrected scheme:
+    \begin{enumerate}
+      \item write own OPF endpoint into PowerModels data;
+      \item write PowerModels OPF endpoint into PowerModels data;
+      \item run \code{PowerModels.compute\_ac\_pf} with Newton and \code{flat\_start=false};
+      \item recompute branch flows with \code{PowerModels.calc\_branch\_flow\_ac};
+      \item compare post-PF inequality levels.
+    \end{enumerate}
+  \item Finding:
+    \begin{itemize}
+      \item all 10 endpoint PF runs converge;
+      \item branch flows are recalculated in all cases;
+      \item same PF violation appears for both endpoints: \(qg_{\min}\), generator 12;
+      \item therefore this is a PowerModels PF/Q-limit convention caveat, not an own-model-specific failure.
+    \end{itemize}
+\end{itemize}
+\vspace{0.4em}
+\tbl{04_loadflow_validation/opf_endpoint_loadflow_validation_julia.csv}{PF validation}
+\tbl{04_loadflow_validation/opf_endpoint_pf_inequality_feasibility_summary_julia.csv}{PF feasibility}
+\tbl{04_loadflow_validation/opf_endpoint_pf_inequality_violations_julia.csv}{PF violations}
+\tbl{04_loadflow_validation/loadflow_validation_scope_and_interpretation.csv}{LF interpretation}
+\end{frame}
+
+\begin{frame}{Python AC OPF Debugging Status}
+\small
+\begin{itemize}
+  \item Python current model:
+    \begin{itemize}
+      \item bus-injection model includes shunts through \(Y_{\mathrm{bus}}\);
+      \item problematic rows were sent to solver-start and deviation diagnostics;
+      \item equality-only diagnostics indicate the PowerModels point is reachable for tested rows.
+    \end{itemize}
+  \item Python PM-like model:
+    \begin{itemize}
+      \item PM-like full sweep has been run and summarized;
+      \item unresolved rows are classified separately as max-iteration, missing-reference, manual-skip, or solver-error cases;
+      \item equality-only deviation on material PM-like mismatches reaches the PowerModels point with zero binding mismatches.
+    \end{itemize}
+  \item Python endpoint LF validation:
+    \begin{itemize}
+      \item warm-start/configure PyPowSyBl/OpenLoadFlow from each Python OPF endpoint and each PowerModels OPF endpoint;
+      \item material current and PM-like rows converge under OpenLoadFlow;
+      \item post-LF inequality levels are split into independently re-derived rows and specified/setpoint-like rows.
+    \end{itemize}
+\end{itemize}
+\vspace{0.4em}
+\tbl{08_python_ac_opf_debugging/python_start_validation_summary.csv}{Python starts}
+\tbl{08_python_ac_opf_debugging/python_pm_like_full_sweep_status_by_case.csv}{PM-like status}
+\tbl{08_python_ac_opf_debugging/python_pm_like_full_sweep_agreement_counts.csv}{Agreement counts}
+\tbl{08_python_ac_opf_debugging/python_pm_like_equality_only_deviation_binding_summary.csv}{Python equality-only}
+\tbl{08_python_ac_opf_debugging/python_endpoint_pypowsybl_loadflow_validation.csv}{PyPowSyBl LF}
+\tbl{08_python_ac_opf_debugging/python_endpoint_pypowsybl_lf_binding_summary.csv}{PyPowSyBl h-levels}
+\end{frame}
+
+\begin{frame}{Discussion Claim And Table Sequence}
+\small
+\begin{itemize}
+  \item Claim to discuss:
+    \begin{itemize}
+      \item bus shunts are present and necessary;
+      \item solver diagnostics are not indicating failed solves for the Julia objective-mismatch rows;
+      \item both own Julia formulations can represent the PowerModels point;
+      \item equality-only \(h(\cdot)\) checks do not expose missing inequality constraints;
+      \item corrected PowerModels PF check does not expose an own-only physical inconsistency;
+      \item remaining differences look more like local optimum / solver trajectory behavior.
+    \end{itemize}
+  \item Suggested table order:
+    \begin{enumerate}
+      \item shunt/formulation table;
+      \item solver diagnostics;
+      \item objective mismatch summary;
+      \item constrained deviation summary;
+      \item equality-only deviation and \(h(\cdot)\) summary;
+      \item load-flow validation summary;
+      \item Python PM-like sweep status;
+      \item Python PyPowSyBl endpoint-LF validation.
+    \end{enumerate}
+\end{itemize}
+\vspace{0.4em}
+\tbl{manifest.csv}{Manifest}
+\tbl{05_shunt_and_formulation/shunt_toggle_solution_summary_julia.csv}{Start here}
+\tbl{07_deviation_minimization/equality_only_deviation_binding_summary_julia.csv}{Core evidence}
+\tbl{08_python_ac_opf_debugging/python_pm_like_full_sweep_summary.csv}{Python PM-like}
+\tbl{08_python_ac_opf_debugging/python_endpoint_pypowsybl_lf_binding_summary.csv}{Python LF}
+\end{frame}
+
+\end{document}

@@ -268,7 +268,15 @@ end
 # Top-level N-1 screening
 # ------------------------------------------------------------
 
-function run_n1_branch_screening(case::PowerCase, data::Dict, base_pg::Dict{String, Float64}, base_case::PowerCase)
+"""`start_mode` is forwarded to `run_powermodels_ac_pf_compute` --
+`:powermodels_default` (unchanged prior behavior), `:case_values_if_supported`
+(explicit warm start: Newton-Raphson's initial guess uses the Vm/Va baked
+into `base_case`), or `:flat_if_supported` (explicit flat start: Vm/Va
+initial guess ignored regardless of what's in `base_case`, dispatch/vg stay
+as fixed inputs either way -- see docs/notation.md and the D1 warm-start
+experiment script for why dispatch isn't itself a "start value" in a power
+flow, only the NR voltage guess is)."""
+function run_n1_branch_screening(case::PowerCase, data::Dict, base_pg::Dict{String, Float64}, base_case::PowerCase; start_mode::Symbol = :powermodels_default, drop_islands::Bool = true)
     rows = []
     for contingency in generate_branch_n1_contingencies(base_case)
         branches = [
@@ -277,13 +285,13 @@ function run_n1_branch_screening(case::PowerCase, data::Dict, base_pg::Dict{Stri
         ]
         contingency_case = PowerCase(base_case.name, base_case.baseMVA, base_case.buses, branches, base_case.generators, base_case.loads, base_case.shunts, base_case.slack_bus_id, base_case.bus_id_to_index)
         data_copy = _write_case_dispatch_into_data(data, contingency_case)
-        pm_result = run_powermodels_ac_pf_compute(data_copy)
+        pm_result = run_powermodels_ac_pf_compute(data_copy; start_mode=start_mode, drop_islands=drop_islands)
         push!(rows, _n1_row_from_compute_pf(base_case, pm_result, contingency.id, "branch", contingency.element_id))
     end
     return DataFrame(rows)
 end
 
-function run_n1_generator_screening(case::PowerCase, data::Dict, base_pg::Dict{String, Float64}, base_case::PowerCase)
+function run_n1_generator_screening(case::PowerCase, data::Dict, base_pg::Dict{String, Float64}, base_case::PowerCase; start_mode::Symbol = :powermodels_default, drop_islands::Bool = true)
     rows = []
     for contingency in generate_generator_n1_contingencies(base_case)
         generators = [
@@ -305,19 +313,19 @@ function run_n1_generator_screening(case::PowerCase, data::Dict, base_pg::Dict{S
         end
 
         data_copy = _write_case_dispatch_into_data(data, balanced_case)
-        pm_result = run_powermodels_ac_pf_compute(data_copy)
+        pm_result = run_powermodels_ac_pf_compute(data_copy; start_mode=start_mode, drop_islands=drop_islands)
         push!(rows, _n1_row_from_compute_pf(base_case, pm_result, contingency.id, "generator", contingency.element_id))
     end
     return DataFrame(rows)
 end
 
-function run_n1_screening(case::PowerCase, data::Dict, own_ac_opf_result; include_branches::Bool = true, include_generators::Bool = true)
+function run_n1_screening(case::PowerCase, data::Dict, own_ac_opf_result; include_branches::Bool = true, include_generators::Bool = true, start_mode::Symbol = :powermodels_default, drop_islands::Bool = true)
     base_pg = Dict(gen.id => get(own_ac_opf_result.pg, gen.id, gen.pg0) for gen in case.generators if gen.status == 1)
     base_case = case_with_base_dispatch_own_ac(case, own_ac_opf_result)
 
     frames = DataFrame[]
-    include_branches && push!(frames, run_n1_branch_screening(case, data, base_pg, base_case))
-    include_generators && push!(frames, run_n1_generator_screening(case, data, base_pg, base_case))
+    include_branches && push!(frames, run_n1_branch_screening(case, data, base_pg, base_case; start_mode=start_mode, drop_islands=drop_islands))
+    include_generators && push!(frames, run_n1_generator_screening(case, data, base_pg, base_case; start_mode=start_mode, drop_islands=drop_islands))
     isempty(frames) && return DataFrame()
     return vcat(frames...)
 end

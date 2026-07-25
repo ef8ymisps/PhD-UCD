@@ -14,7 +14,27 @@ using HiGHS
 using Ipopt
 using JuMP
 using PowerModels
-using ProgressMeter
+
+PowerModels.silence()
+
+const HAS_PROGRESS_METER = try
+    @eval using ProgressMeter
+    true
+catch err
+    println("ProgressMeter is unavailable; continuing without progress display.")
+    false
+end
+
+struct NoOpProgress end
+
+function make_progress()
+    return HAS_PROGRESS_METER ? ProgressMeter.ProgressUnknown(desc="Solving:", spinner=true, showspeed=true) : NoOpProgress()
+end
+
+progress_next!(::NoOpProgress; showvalues=nothing) = nothing
+progress_finish!(::NoOpProgress) = nothing
+progress_next!(progress; showvalues=nothing) = ProgressMeter.next!(progress; showvalues=showvalues)
+progress_finish!(progress) = ProgressMeter.finish!(progress)
 
 const DEFAULT_CASES = [
     "pglib_opf_case5_pjm",
@@ -124,10 +144,12 @@ function parse_models(text::String)
     models = Symbol.(lowercase.(split_csv_arg(text)))
     bad = [m for m in models if !(m in (:ac, :dc))]
     if !isempty(bad)
-        error("Unsupported model(s): $(join(string.(bad), ", ")). Use ac, dc, or ac,dc.")
+        error("Unsupported model(s): $(join(string.(bad), ", ")). Use ac, dc, or a comma-separated combination.")
     end
     return models
 end
+
+is_ac_validation_model(model::Symbol) = model == :ac
 
 function parse_float_list(text::String)
     return [parse(Float64, item) for item in split_csv_arg(text)]
@@ -669,7 +691,7 @@ function comparison_summary(entry, model::Symbol, own_result, pm_result, own_tim
 
     if own_solved && pm_solved && own_result !== nothing && pm_result !== nothing
         case = OwnPowerModels.powermodels_to_powercase(deepcopy(entry.data))
-        raw = model == :ac ?
+        raw = is_ac_validation_model(model) ?
             ac_opf_summary_row(case, own_result, pm_result; scenario=entry.scenario) :
             dc_opf_summary_row(case, own_result, pm_result; scenario=entry.scenario)
         for name in metric_names
@@ -765,10 +787,10 @@ function run_one_model(entry, model::Symbol; ac_optimizer, dc_optimizer, fix_ref
     pm_time = NaN
     pm_iterations = NaN
 
-    if model == :ac
+    if is_ac_validation_model(model)
         start = time()
         try
-            own_result = solve_ac_opf_own(case; optimizer=ac_optimizer, silent=true, fix_reference_angle=fix_reference_angle)
+            own_result = solve_ac_opf_own(case; optimizer=ac_optimizer, silent=true, fix_reference_angle=fix_reference_angle, warm_start=:zero)
         catch err
             own_error = sprint(showerror, err)
         finally
@@ -818,7 +840,7 @@ function run_one_model(entry, model::Symbol; ac_optimizer, dc_optimizer, fix_ref
     if write_detail_rows && own_result !== nothing && pm_result !== nothing &&
        is_solved_status(safe_own_status(own_result)) && is_solved_status(safe_pm_status(pm_result))
         try
-            if model == :ac
+            if is_ac_validation_model(model)
                 write_ac_opf_detail_rows!(detail_dir, case, own_result, pm_result; scenario=entry.scenario)
             else
                 write_dc_opf_detail_rows!(detail_dir, case, own_result, pm_result; scenario=entry.scenario)
@@ -896,7 +918,7 @@ function main()
     println("Writing checkpointed summary to: ", abspath(summary_path))
     println("Models: ", join(string.(models), ", "), " | Ipopt max_iter=", max_iter)
 
-    progress = ProgressUnknown(desc="Solving:", spinner=true, showspeed=true)
+    progress = make_progress()
 
     try
         for raw_case in cases
@@ -928,7 +950,7 @@ function main()
                     row = run_one_model(entry, model; ac_optimizer=ac_optimizer, dc_optimizer=dc_optimizer, fix_reference_angle=fix_reference_angle, write_detail_rows=write_detail_rows, detail_dir=detail_dir)
                     append_summary_row!(summary_path, row)
                     push!(completed, key)
-                    next!(progress; showvalues=[(:case, label), (:model, model), (:scenario, entry.scenario_id)])
+                    progress_next!(progress; showvalues=[(:case, label), (:model, model), (:scenario, entry.scenario_id)])
                     GC.gc()
                 end
             end
@@ -943,7 +965,7 @@ function main()
             end
         end
     finally
-        finish!(progress)
+        progress_finish!(progress)
     end
 
     println("\nDone. Summary: ", abspath(summary_path))

@@ -87,6 +87,18 @@ def main() -> None:
         help="Override Ipopt max_iter for this sweep run.",
     )
     parser.add_argument(
+        "--model-variant",
+        choices=["pm_like_zero"],
+        default="pm_like_zero",
+        help="AC OPF implementation to run. 'pm_like_zero' is the sole AC-OPF model "
+        "(bus-injection/'current' was deleted).",
+    )
+    parser.add_argument(
+        "--warm-start",
+        default=None,
+        help="Override AC OPF warm-start mode. Defaults to zero for pm_like_zero and existing settings otherwise.",
+    )
+    parser.add_argument(
         "--only-scenario-ids",
         nargs="*",
         default=None,
@@ -104,7 +116,13 @@ def main() -> None:
     settings = {
         **DEFAULT_SETTINGS,
         "include_no_reference_slack": args.include_no_reference_slack,
+        "model_variant": args.model_variant,
     }
+    if args.model_variant == "pm_like_zero":
+        settings["model_variant"] = "pm_like"
+        settings["warm_start"] = "zero"
+    if args.warm_start is not None:
+        settings["warm_start"] = args.warm_start
     if args.max_iter is not None:
         settings["solver_options"] = {
             **dict(DEFAULT_SETTINGS.get("solver_options", {})),

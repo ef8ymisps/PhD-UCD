@@ -51,7 +51,13 @@ def build_ac_initial_point(
 
     Supported modes:
     - ``case``: use Pg/Qg/Vm/Va already stored in the PowerCase.
-    - ``flat``: use clipped generation starts, Vm=1.0, Va=0.0.
+    - ``flat``: use clipped generation Pg starts (from the case), Qg=0,
+      Vm=1.0, Va=0.0. A hybrid — Pg still comes from the case, everything
+      else is flat.
+    - ``zero``: fully flat, matching PowerModels.jl's actual default exactly
+      -- Pg=Qg=0 (clipped to bounds), Vm=1.0, Va=0.0. Use this (not
+      ``flat``) when the point is to compare against PowerModels' real
+      starting point; see ``docs/notes/solver_tolerances.md``.
     - ``stored_opf``: use a provided stored AC/DC OPF solution where available.
     - ``pypowsybl_lf``: use a caller-provided PyPowSyBl LF result/provider.
     - ``replacement``: currently aliases case starts; the case records already
@@ -97,6 +103,8 @@ def _try_build_initial_point(
         return build_case_initial_point(case, data, source=mode)
     if mode == "flat":
         return build_flat_initial_point(case, data)
+    if mode == "zero":
+        return build_zero_initial_point(case, data)
     if mode == "stored_opf":
         if stored_solution is None:
             return None
@@ -137,6 +145,33 @@ def build_flat_initial_point(case, data) -> ACInitialPoint:
         source="flat",
         pg={
             gen.id: clip_to_bounds(gen.pg0, gen.pmin, gen.pmax)
+            for gen in data.generators
+        },
+        qg={
+            gen.id: clip_to_bounds(0.0, gen.qmin, gen.qmax)
+            for gen in data.generators
+        },
+        vm={
+            bus.id: clip_to_bounds(1.0, data.vmin_by_bus[bus.id], data.vmax_by_bus[bus.id])
+            for bus in data.buses
+        },
+        va={bus.id: 0.0 for bus in data.buses},
+    )
+
+
+def build_zero_initial_point(case, data) -> ACInitialPoint:
+    """Fully flat initial point matching PowerModels.jl's actual default:
+
+    Pg=Qg=0 (clipped to bounds), Vm=1.0, Va=0.0. Unlike ``flat`` (which
+    still uses the case's real Pg), this is the genuine zero-injection
+    start PowerModels uses whenever ``pg_start``/``qg_start`` are absent
+    from the parsed case data (the normal PGLib parsing path) -- see
+    ``docs/notes/solver_tolerances.md``.
+    """
+    return ACInitialPoint(
+        source="zero",
+        pg={
+            gen.id: clip_to_bounds(0.0, gen.pmin, gen.pmax)
             for gen in data.generators
         },
         qg={

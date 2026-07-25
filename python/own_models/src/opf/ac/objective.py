@@ -26,15 +26,29 @@ def generation_cost_expression(model, case, generators, cost_power_units: str):
     )
 
 
-def active_losses_expression(model, data):
-    """Return total active generation minus fixed active demand.
+def active_losses_expression(model):
+    """Return total active branch loss: sum of each arc's own `p` flow
+    variable over the full directed arc set (`model.ARC` already contains
+    both directions per branch, so this equals `sum(pf + pt)` per branch --
+    exactly Julia's `add_ac_active_losses_objective!` and the custom
+    PowerModels loss-objective reference used to validate it).
 
-    With fixed loads and AC balance equations, minimizing this expression is
-    equivalent to minimizing active network losses plus active shunt effects
-    represented in Ybus.
+    A prior version of this function used `sum(Pg) - fixed_Pd` instead
+    (generation minus load) -- by the AC power-balance equations this
+    differs from branch-only losses by the total ACTIVE bus-shunt
+    conductance draw (`sum(Gs_i * Vm_i^2)`), since that consumption is
+    counted in the generation/load balance but is NOT part of any branch's
+    own arc flow. That discrepancy is negligible on cases with zero/near-zero
+    shunt conductance, but real and reproducible (~0.3-0.5% of total losses,
+    confirmed via a three-way PowerModels/Julia/Python comparison across the
+    full validation grid) on `case300_ieee`, which has non-trivial active
+    shunt conductance -- Julia and PowerModels (both true branch-only losses)
+    agreed with each other while Python (branch losses + shunt draw)
+    consistently landed on a different value, robust across every warm-start
+    mode tried. Using the same arc-sum definition as Julia removes the
+    discrepancy at its source rather than patching around it.
     """
-    fixed_pd = sum(load.pd for load in data.loads)
-    return sum(model.pg[gen.id] for gen in data.generators) - fixed_pd
+    return sum(model.p[arc] for arc in model.ARC)
 
 
 def pg_deviation_expression(model, data, options: dict[str, object]):
@@ -44,6 +58,29 @@ def pg_deviation_expression(model, data, options: dict[str, object]):
         (model.pg[gen.id] - float(cast(float | int | str, reference_pg.get(gen.id, gen.pg0)))) ** 2
         for gen in data.generators
     )
+
+
+def target_deviation_expression(model, data, options: dict[str, object]):
+    """L1 total deviation from a target point via signed slacks -- sum of
+    every dpg_plus/dpg_minus/dqg_plus/... pair that exists on the model.
+    `add_ac_target_deviation_variables` (variables.py) only builds a group's
+    slack pair when that group is included (gated by `include_pg`/
+    `include_qg`/`include_vm`/`include_va` in options, default True), not by
+    whether its target dict happens to be present -- target dicts are now
+    always passed for every group. Mirrors Julia's
+    add_ac_target_deviation_objective!'s sum(plus[id] + minus[id] ...)."""
+    terms = []
+    if options.get("include_pg", True):
+        terms.append(sum(model.dpg_plus[g] + model.dpg_minus[g] for g in model.GEN))
+    if options.get("include_qg", True):
+        terms.append(sum(model.dqg_plus[g] + model.dqg_minus[g] for g in model.GEN))
+    if options.get("include_vm", True):
+        terms.append(sum(model.dvm_plus[b] + model.dvm_minus[b] for b in model.BUS))
+    if options.get("include_va", True):
+        terms.append(sum(model.dva_plus[b] + model.dva_minus[b] for b in model.BUS))
+    if not terms:
+        raise ValueError("objective_type='target_deviation' requires at least one included group.")
+    return sum(terms)
 
 
 def load_curtailment_expression(model, data, options: dict[str, object]):
@@ -72,9 +109,11 @@ def add_ac_opf_objective(
     if objective_type == "generation_cost":
         expr = generation_cost_expression(model, case, model._ac_data.generators, cost_power_units)
     elif objective_type == "active_losses":
-        expr = active_losses_expression(model, model._ac_data)
+        expr = active_losses_expression(model)
     elif objective_type == "pg_deviation":
         expr = pg_deviation_expression(model, model._ac_data, options)
+    elif objective_type == "target_deviation":
+        expr = target_deviation_expression(model, model._ac_data, options)
     elif objective_type == "load_curtailment":
         expr = load_curtailment_expression(model, model._ac_data, options)
     elif objective_type == "max_loadability":

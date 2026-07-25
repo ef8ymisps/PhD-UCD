@@ -3,16 +3,36 @@ from __future__ import annotations
 import cmath
 
 import numpy as np
+from scipy import sparse
 
 from own_models.src.data.case import PowerCase
 
 
-def build_admittance_matrix(case: PowerCase) -> np.ndarray:
-    """Build the full complex AC bus-admittance matrix Ybus."""
+def build_admittance_matrix(case: PowerCase) -> sparse.csr_matrix:
+    """Build the full complex AC bus-admittance matrix Ybus.
+
+    Built directly as a sparse matrix (COO triplet accumulation -> CSR) --
+    never allocating an n x n dense array. Real power networks are extremely
+    sparse here (measured 0.054% nonzero density on case6470_rte: 22,602
+    real entries out of 41.86 million), so the old `np.zeros((nb, nb))`
+    approach was allocating a ~670 MB array of which 99.95% was wasted
+    zeros, on every single solve. `coo_matrix(...).tocsr()` sums duplicate
+    (i, j) triplets automatically (documented scipy behavior), matching the
+    accumulation semantics needed here (e.g. two parallel branches between
+    the same bus pair, or multiple shunts at one bus) -- mirrors
+    julia/own_models/src/network/admittance_matrix.jl's equivalent fix.
+    """
     # Full AC Ybus, including branch-side shunts and off-nominal complex taps.
     # The tap is applied on the from side as tap_mag * exp(j * shift).
     nb = len(case.buses)
-    ybus = np.zeros((nb, nb), dtype=complex)
+    rows: list[int] = []
+    cols: list[int] = []
+    vals: list[complex] = []
+
+    def add(i: int, j: int, v: complex) -> None:
+        rows.append(i)
+        cols.append(j)
+        vals.append(v)
 
     for branch in case.branches:
         if branch.status == 0:
@@ -29,20 +49,22 @@ def build_admittance_matrix(case: PowerCase) -> np.ndarray:
         tap_mag = branch.tap if branch.tap != 0.0 else 1.0
         tap = tap_mag * cmath.exp(1j * branch.shift)
 
-        ybus[i, i] += (y + y_fr) / abs(tap) ** 2
-        ybus[i, j] += -y / tap.conjugate()
-        ybus[j, i] += -y / tap
-        ybus[j, j] += y + y_to
-
+        add(i, i, (y + y_fr) / abs(tap) ** 2)
+        add(i, j, -y / tap.conjugate())
+        add(j, i, -y / tap)
+        add(j, j, y + y_to)
+    # Add shunt terms to the diagonal of Ybus.
     for shunt in case.shunts:
         if shunt.status == 1:
             i = case.bus_id_to_index[shunt.bus]
-            ybus[i, i] += complex(shunt.gs, shunt.bs)
+            add(i, i, complex(shunt.gs, shunt.bs))
 
+    ybus = sparse.coo_matrix((vals, (rows, cols)), shape=(nb, nb), dtype=complex).tocsr()
+    ybus.sum_duplicates()
     return ybus
 
 
-def calc_bus_power_injections(ybus: np.ndarray, vm: np.ndarray, va: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def calc_bus_power_injections(ybus: sparse.csr_matrix, vm: np.ndarray, va: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Calculate bus active/reactive injections from voltage and Ybus."""
     # Positive P/Q are injections into the network: S = V * conj(YV).
     voltage = vm * np.exp(1j * va)

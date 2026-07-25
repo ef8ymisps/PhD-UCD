@@ -48,7 +48,7 @@ function collect_ac_opf_result(model::Model, case::PowerCase, data::ACOPFData, p
     vm_result = Dict(bus.id => value(vm[bus.id]) for bus in case.buses)
     va_result = Dict(bus.id => value(va[bus.id]) for bus in case.buses)
 
-    pf_by_branch, qf_by_branch, pt_by_branch, qt_by_branch = branch_flows
+    pf_by_branch, qf_by_branch, pt_by_branch, qt_by_branch = branch_flows.pf, branch_flows.qf, branch_flows.pt, branch_flows.qt
     flow_result = Dict{String, Dict{String, Float64}}()
     for branch in data.active_branches
         flow_result[branch.id] = Dict(

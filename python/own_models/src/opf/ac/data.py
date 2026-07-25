@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
+from scipy import sparse
 
 from own_models.src.data.case import PowerCase
 from own_models.src.network.admittance import build_admittance_matrix
@@ -32,10 +32,11 @@ class ACOPFData:
     vmax_by_bus: dict[str, float]
     pd_by_bus: dict[str, float]
     qd_by_bus: dict[str, float]
+    gs_by_bus: dict[str, float]
+    bs_by_bus: dict[str, float]
     gens_at_bus: dict[str, list[str]]
     loads_at_bus: dict[str, list[str]]
-    ybus: np.ndarray
-    ybus_terms_by_bus: dict[str, list[tuple[str, float, float]]]
+    ybus: sparse.csr_matrix
 
 
 def active_generators(case: PowerCase):
@@ -62,6 +63,25 @@ def load_by_bus(case: PowerCase) -> tuple[dict[str, float], dict[str, float]]:
             pd[load.bus] += float(load.pd)
             qd[load.bus] += float(load.qd)
     return pd, qd
+
+
+def shunts_by_bus(case: PowerCase) -> tuple[dict[str, float], dict[str, float]]:
+    """Aggregate online bus-shunt gs/bs by bus.
+
+    Branch charging is NOT included here -- it's already folded into each
+    branch's own yff/ytt (`branch_admittance_terms`), so it belongs to the
+    arc-based formulation's per-branch Ohm's-law equations, not the bus
+    balance. Needed by `_add_ac_power_balance_constraints` (model.py), which
+    sums directed arc flows rather than a nodal Ybus row. Mirrors
+    julia/own_models/src/opf/ac/data.jl's `gs_by_bus`/`bs_by_bus`.
+    """
+    gs = {bus.id: 0.0 for bus in case.buses}
+    bs = {bus.id: 0.0 for bus in case.buses}
+    for shunt in case.shunts:
+        if shunt.status == 1:
+            gs[shunt.bus] += float(shunt.gs)
+            bs[shunt.bus] += float(shunt.bs)
+    return gs, bs
 
 
 def loads_at_bus(case: PowerCase, loads) -> dict[str, list[str]]:
@@ -92,19 +112,6 @@ def validate_case_for_ac_opf(case: PowerCase) -> None:
         raise ACOPFError("AC OPF requires at least one active generator.")
     if case.slack_bus_id not in case.bus_id_to_index:
         raise ACOPFError(f"Slack bus {case.slack_bus_id!r} is not in the bus map.")
-
-
-def build_ybus_terms_by_bus(case: PowerCase) -> dict[str, list[tuple[str, float, float]]]:
-    """Build sparse Ybus row terms as ``(other_bus_id, Gij, Bij)``."""
-    ybus = build_admittance_matrix(case)
-    terms: dict[str, list[tuple[str, float, float]]] = {bus.id: [] for bus in case.buses}
-    for i, bus in enumerate(case.buses):
-        nz = np.flatnonzero(np.abs(ybus[i, :]) > 1e-14)
-        terms[bus.id] = [
-            (case.buses[j].id, float(ybus[i, j].real), float(ybus[i, j].imag))
-            for j in nz
-        ]
-    return terms
 
 
 def voltage_limit_maps(
@@ -164,6 +171,7 @@ def prepare_ac_opf_data(
     branches = active_branches(case)
     loads = active_loads(case)
     pd, qd = load_by_bus(case)
+    gs, bs = shunts_by_bus(case)
     vmin, vmax = voltage_limit_maps(case, voltage_bounds)
 
     ybus = build_admittance_matrix(case)
@@ -184,14 +192,9 @@ def prepare_ac_opf_data(
         vmax_by_bus=vmax,
         pd_by_bus=pd,
         qd_by_bus=qd,
+        gs_by_bus=gs,
+        bs_by_bus=bs,
         gens_at_bus=generators_at_bus(case, generators),
         loads_at_bus=loads_at_bus(case, loads),
         ybus=ybus,
-        ybus_terms_by_bus={
-            bus.id: [
-                (case.buses[j].id, float(ybus[i, j].real), float(ybus[i, j].imag))
-                for j in np.flatnonzero(np.abs(ybus[i, :]) > 1e-14)
-            ]
-            for i, bus in enumerate(buses)
-        },
     )

@@ -93,7 +93,17 @@ function solution_dict(result, field::String)
     return result["solution"][field]
 end
 
-function pm_summary_row(context, result, solve_time_sec::Float64; error::String="")
+"""Best-effort Ipopt barrier iteration count; NaN if unavailable. Mirrors
+OwnPowerModels._safe_barrier_iterations (julia/own_models/src/opf/ac/results.jl)."""
+function safe_barrier_iterations(model)
+    try
+        return Float64(JuMP.barrier_iterations(model))
+    catch
+        return NaN
+    end
+end
+
+function pm_summary_row(context, result, solve_time_sec::Float64, iterations::Float64; error::String="")
     status = haskey(result, "termination_status") ? string(result["termination_status"]) : "ERROR"
     objective = haskey(result, "objective") ? result["objective"] : NaN
     return (;
@@ -102,6 +112,7 @@ function pm_summary_row(context, result, solve_time_sec::Float64; error::String=
         pm_solved=solved_status(status),
         pm_objective=objective,
         pm_solve_time_sec=solve_time_sec,
+        pm_solve_iterations=iterations,
         pm_error=error,
     )
 end
@@ -164,7 +175,7 @@ end
 function summary_columns()
     return [
         :case_name, :scenario, :target_type, :target_id, :parameter_name, :parameter_value,
-        :scenario_id, :pm_status, :pm_solved, :pm_objective, :pm_solve_time_sec, :pm_error,
+        :scenario_id, :pm_status, :pm_solved, :pm_objective, :pm_solve_time_sec, :pm_solve_iterations, :pm_error,
     ]
 end
 
@@ -230,8 +241,10 @@ for row in eachrow(manifest)
     start = time()
     try
         data = PowerModels.parse_file(scenario_file)
-        result = PowerModels.solve_ac_opf(data, optimizer)
+        pm = PowerModels.instantiate_model(data, ACPPowerModel, PowerModels.build_opf)
+        result = PowerModels.optimize_model!(pm, optimizer=optimizer)
         solve_time_sec = time() - start
+        iterations = safe_barrier_iterations(pm.model)
 
         if solved_status(string(result["termination_status"]))
             append_rows!(generator_path, pm_generator_rows(context, result), generator_columns())
@@ -242,9 +255,9 @@ for row in eachrow(manifest)
             append_rows!(bus_path, NamedTuple[], bus_columns())
             append_rows!(branch_path, NamedTuple[], branch_columns())
         end
-        append_rows!(summary_path, [pm_summary_row(context, result, solve_time_sec)], summary_columns())
+        append_rows!(summary_path, [pm_summary_row(context, result, solve_time_sec, iterations)], summary_columns())
         push!(completed, scenario_id)
-        verbose && println("  status=", result["termination_status"], " objective=", get(result, "objective", NaN))
+        verbose && println("  status=", result["termination_status"], " objective=", get(result, "objective", NaN), " iterations=", iterations)
     catch err
         solve_time_sec = time() - start
         append_rows!(generator_path, NamedTuple[], generator_columns())

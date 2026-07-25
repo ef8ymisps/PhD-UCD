@@ -11,7 +11,6 @@ from own_models.src.network.admittance import (
     calc_ac_branch_flows,
     calc_bus_power_injections,
 )
-from own_models.src.opf.ac.variables import finite_or_none
 
 
 def _generator_vectors(case, data, pg: dict[str, float], qg: dict[str, float]):
@@ -104,76 +103,9 @@ def evaluate_ac_opf_constraint_violations(
     }
 
 
-def add_ac_power_balance_constraints(model, case, data) -> None:
-    """Add nonlinear nodal P/Q balance constraints."""
-    def pcalc(bus_id):
-        return sum(
-            model.vm[bus_id]
-            * model.vm[other_bus]
-            * (
-                gij * pyo.cos(model.va[bus_id] - model.va[other_bus])
-                + bij * pyo.sin(model.va[bus_id] - model.va[other_bus])
-            )
-            for other_bus, gij, bij in data.ybus_terms_by_bus[bus_id]
-        )
-
-    def qcalc(bus_id):
-        return sum(
-            model.vm[bus_id]
-            * model.vm[other_bus]
-            * (
-                gij * pyo.sin(model.va[bus_id] - model.va[other_bus])
-                - bij * pyo.cos(model.va[bus_id] - model.va[other_bus])
-            )
-            for other_bus, gij, bij in data.ybus_terms_by_bus[bus_id]
-        )
-
-    def load_scale(_model):
-        return _model.loadability_factor if hasattr(_model, "loadability_factor") else 1.0
-
-    def served_load_fraction(_model, load_id):
-        if hasattr(_model, "load_curtailment_fraction"):
-            return 1.0 - _model.load_curtailment_fraction[load_id]
-        return 1.0
-
-    def active_demand(_model, bus_id):
-        return sum(
-            load_scale(_model) * data.load_by_id[load_id].pd * served_load_fraction(_model, load_id)
-            for load_id in data.loads_at_bus[bus_id]
-        )
-
-    def reactive_demand(_model, bus_id):
-        return sum(
-            load_scale(_model) * data.load_by_id[load_id].qd * served_load_fraction(_model, load_id)
-            for load_id in data.loads_at_bus[bus_id]
-        )
-
-    def p_balance_rule(_model, bus_id):
-        generation = sum(_model.pg[gen_id] for gen_id in data.gens_at_bus[bus_id])
-        return generation - active_demand(_model, bus_id) - pcalc(bus_id) == 0.0
-
-    def q_balance_rule(_model, bus_id):
-        generation = sum(_model.qg[gen_id] for gen_id in data.gens_at_bus[bus_id])
-        return generation - reactive_demand(_model, bus_id) - qcalc(bus_id) == 0.0
-
-    model.p_balance = pyo.Constraint(model.BUS, rule=p_balance_rule)
-    model.q_balance = pyo.Constraint(model.BUS, rule=q_balance_rule)
-
-
 def add_reference_angle_constraint(model, slack_bus_id: str) -> None:
     """Fix the voltage angle reference."""
     model.slack_angle = pyo.Constraint(expr=model.va[slack_bus_id] == 0.0)
-
-
-def add_branch_angle_constraints(model, data) -> None:
-    """Add branch voltage-angle-difference limits."""
-
-    def angle_limit_rule(_model, branch_id):
-        branch = data.branch_by_id[branch_id]
-        angle = _model.va[branch.from_bus] - _model.va[branch.to_bus]
-        return finite_or_none(branch.angmin), angle, finite_or_none(branch.angmax)
-
-    model.angle_limits = pyo.Constraint(model.BRANCH, rule=angle_limit_rule)
 
 
 def branch_admittance_terms(branch):
@@ -219,22 +151,3 @@ def branch_flow_exprs(model, branch):
         ytf.real * pyo.sin(angle_tf) - ytf.imag * pyo.cos(angle_tf)
     )
     return pf, qf, pt, qt
-
-
-def add_branch_thermal_constraints(model, data) -> None:
-    """Add two-ended branch apparent-power limits."""
-    limited_branch_ids = [branch.id for branch in data.branches if branch.rate_a > 0.0]
-    model.LIMITED_BRANCH = pyo.Set(initialize=limited_branch_ids, ordered=True)
-
-    def from_thermal_rule(_model, branch_id):
-        branch = data.branch_by_id[branch_id]
-        pf, qf, _, _ = branch_flow_exprs(_model, branch)
-        return pf**2 + qf**2 <= branch.rate_a**2
-
-    def to_thermal_rule(_model, branch_id):
-        branch = data.branch_by_id[branch_id]
-        _, _, pt, qt = branch_flow_exprs(_model, branch)
-        return pt**2 + qt**2 <= branch.rate_a**2
-
-    model.from_thermal_limits = pyo.Constraint(model.LIMITED_BRANCH, rule=from_thermal_rule)
-    model.to_thermal_limits = pyo.Constraint(model.LIMITED_BRANCH, rule=to_thermal_rule)

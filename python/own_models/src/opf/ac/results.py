@@ -107,3 +107,41 @@ def extract_ac_opf_result(
         solve_iterations=solve_iterations,
         **violations,
     )
+
+
+def status_only_ac_opf_result(
+    model,
+    solve_result,
+    *,
+    message_suffix: str = "",
+    solve_iterations: float = float("nan"),
+) -> ACOPFResult:
+    """Return a diagnostic result when the solver produced no loadable point."""
+    termination = solve_result.solver.termination_condition
+    message = str(solve_result.solver.message)
+    if message_suffix:
+        message = f"{message}; {message_suffix}" if message else message_suffix
+
+    return ACOPFResult(
+        success=False,
+        status=str(termination),
+        message=message,
+        objective=float("nan"),
+        pg={},
+        qg={},
+        vm={},
+        va={},
+        branch_flows={},
+        load_curtailment={},
+        loadability_factor=float("nan"),
+        max_p_balance_violation=float("nan"),
+        max_q_balance_violation=float("nan"),
+        max_pg_limit_violation=float("nan"),
+        max_qg_limit_violation=float("nan"),
+        max_voltage_violation=float("nan"),
+        max_thermal_violation=float("nan"),
+        max_angle_violation=float("nan"),
+        warm_start_source=str(getattr(model, "_warm_start_source", "")),
+        raw_result=solve_result,
+        solve_iterations=solve_iterations,
+    )

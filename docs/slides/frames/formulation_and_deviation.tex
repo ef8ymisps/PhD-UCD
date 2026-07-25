@@ -1,0 +1,180 @@
+\begin{frame}{Current Julia AC-OPF Model: Formulation}
+\small
+\begin{itemize}
+  \item Bus-injection formulation: \code{Pg}, \code{Qg}, \code{Vm}, \code{Va}.
+  \item Power balance uses the sparse row of \code{Ybus}.
+\end{itemize}
+
+\[
+P_i =
+\sum_j V_iV_j\left(G_{ij}\cos(\theta_i-\theta_j)+B_{ij}\sin(\theta_i-\theta_j)\right)
+\]
+\[
+Q_i =
+\sum_j V_iV_j\left(G_{ij}\sin(\theta_i-\theta_j)-B_{ij}\cos(\theta_i-\theta_j)\right)
+\]
+
+\begin{itemize}
+  \item Bus shunts are already in the diagonal:
+\end{itemize}
+\[
+Y_{ii} = \sum_{\ell \in \delta(i)} Y_{ii}^{(\ell)} + g_i^{sh} + j b_i^{sh}
+\qquad
+Y_{ij} = \sum_{\ell:\, i \leftrightarrow j} Y_{ij}^{(\ell)}
+\]
+
+\begin{itemize}
+  \item Shunt susceptance appears through the \(-B_{ii}V_i^2\) part of \code{Qi}.
+  \item Parallel lines accumulate in the same off-diagonal \code{Yij}.
+  \item Thermal/rate limits still stay per physical branch.
+\end{itemize}
+
+\vspace{0.2em}
+\tbl{\linkFormulationSupport}{support folder}
+\tbl{\linkBusShuntAudit}{bus shunts}
+\tbl{\linkParallelBranchAudit}{parallel lines}
+\tbl{\linkShuntToggleSummary}{shunt toggle}
+
+\end{frame}
+
+
+\begin{frame}{AC-OPF Timing: Julia and Python PM-like}
+\small
+\begin{itemize}
+  \item Current: bus-injection expressions directly in balances and thermal limits.
+  \item PM-like: explicit branch-flow variables plus Ohm's-law flow constraints.
+  \item Cell format: mean solve time / mean iterations.
+\end{itemize}
+
+\vspace{0.2em}
+\begin{tabular}{lllll}
+\toprule
+Case & Julia current & Julia PM-like & Python PM-like & PowerModels \\
+\midrule
+5\_pjm & 0.161 / 19.5 & 0.029 / 21.1 & 0.096 / 21.3 & 0.016 / 21.1 \\
+14\_ieee & 0.014 / 15.1 & 0.012 / 15.4 & 0.099 / 15.5 & 0.009 / 15.4 \\
+30\_ieee & 0.024 / 16.8 & 0.022 / 17.5 & 0.112 / 17.6 & 0.020 / 17.5 \\
+118\_ieee & 0.115 / 25.2 & 0.111 / 28.3 & 0.274 / 28.3 & 0.099 / 28.3 \\
+300\_ieee & 0.348 / 32.2 & 0.342 / 34.1 & 0.617 / 34.1 & 0.310 / 34.1 \\
+1354\_pegase & 2.909 / 40.9 & 2.841 / 50.1 & 3.974 / 50.3 & 2.812 / 50.1 \\
+1888\_rte & 15.437 / 204.3 & 10.276 / 131.0 & 13.091 / 143.1 & 11.293 / 155.9 \\
+6470\_rte & 128.685 / 427.6 & 27.755 / 94.4 & 30.322 / 94.4 & 27.687 / 94.2 \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.3em}
+\begin{itemize}
+  \item Python PM-like iteration counts added from the Ipopt iteration backfill.
+\end{itemize}
+
+\tbl{\linkPerfAllModelsPythonPMlike}{all-model timing}
+\tbl{\linkPMvsCurrentPerf}{compact timing}
+\tbl{\linkPMvsCurrentPerfByCase}{per-case timing}
+\end{frame}
+
+
+\begin{frame}{Deviation Minimization: Summary}
+\scriptsize
+\begin{itemize}
+  \item Scenario filter: non-zero objective gap from existing objective-mismatch diagnostics.
+  \item Diagnostic objective: minimize deviation from the PowerModels OPF point.
+\end{itemize}
+
+\vspace{0.2em}
+\begin{tabular}{lllrrr}
+\toprule
+Model & Scenario & Cheaper & Obj gap & Full L1 & Full max var \\
+\midrule
+Current Julia & load x1.2 reactive & current & -3.84e3 & 0 & 6.78e-10 \\
+Current Julia & load x0.8 & current & -12.5 & 0 & 5.79e-10 \\
+PM-like Julia & load x0.8 & PM & 7.98e4 & 0 & 5.83e-10 \\
+PM-like Julia & load x1.2 reactive & PM & 3.58e3 & 0 & 5.97e-10 \\
+PM-like Julia & Qg limits x0.6 & PM & 3.93e2 & 0 & 1.90e-10 \\
+PM-like Python & load x0.8 & PM & 7.98e4 & 3.86e-4 & 2.88e-5 \\
+PM-like Python & load x1.2 reactive & PM & 3.58e3 & 2.22e-4 & 4.88e-5 \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.4em}
+\begin{itemize}
+  \item Julia diagnostics reach the PowerModels point to numerical precision.
+  \item Python PM-like lands close to PowerModels; residual differences remain small but visible.
+\end{itemize}
+
+\tbl{\linkDevMinCurrentSummary}{current summary}
+\tbl{\linkDevMinPMlikeSummary}{PM-like summary}
+\tbl{\linkDevMinPMlikePythonSummary}{Python summary}
+\tbl{\linkDevMinVariantSummary}{variants}
+\tbl{\linkObjectiveGapFilteredScenarios}{objective filter}
+\tbl{\linkConstrainedDeviationConstraintMismatchByScenario}{constraint scenario}
+\tbl{\linkConstrainedDeviationConstraintMismatchByFamily}{constraint family}
+\tbl{\linkConstrainedDeviationConstraintMismatchDetails}{constraint details}
+\tbl{\linkConstrainedDevNonzeroLOneMismatchByFamily}{nonzero-L1 family}
+\tbl{\linkConstrainedDevNonzeroLOneMismatchDetails}{nonzero-L1 details}
+\tbl{\linkConstrainedDevNonzeroLOneMaterialMismatchDetails}{material nonzero-L1}
+\end{frame}
+
+\begin{frame}{Equality-Only Deviation Problem}
+\scriptsize
+\begin{itemize}
+  \item Keep only AC equality constraints.
+  \item Drop inequality constraints during solve; evaluate \(h(\cdot)\) afterwards.
+  \item Compare \(h(x_E^{**},u_E^{**})\) against \(h(x_P^*,u_P^*)\).
+  \item All-model h-level table includes current Julia, PM-like Julia, and PM-like Python.
+\end{itemize}
+
+\vspace{0.2em}
+\begin{tabular}{llrrrrl}
+\toprule
+Model & Scenario & L1 & Max var & h mism. & h viol. & Detail \\
+\midrule
+current & load x1.2 reactive & 0 & 7.14e-13 & 0 & 0 & \tbl{\linkEqOnlyReactive}{open} \\
+current & load x0.8 & 0 & 4.71e-13 & 0 & 0 & \tbl{\linkEqOnlyLoadLow}{open} \\
+PM-like & load x0.8 & 0 & 2.28e-13 & 0 & 0 & \tbl{\linkEqOnlyLoadLow}{open} \\
+PM-like & load x1.2 reactive & 0 & 4.60e-13 & 0 & 0 & \tbl{\linkEqOnlyReactive}{open} \\
+PM-like & Qg limits x0.6 & 0 & 4.32e-13 & 0 & 0 & \tbl{\linkEqOnlyQgLimits}{open} \\
+PM-like Python & load x0.8 & 0 & 8.09e-13 & 0 & 0 & \tbl{\linkConstraintMismatchEvidence}{tables} \\
+PM-like Python & load x1.2 reactive & 0 & 1.25e-12 & 0 & 0 & \tbl{\linkConstraintMismatchEvidence}{tables} \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.4em}
+\begin{itemize}
+  \item Max \(h(\cdot)\) margin differences are \(10^{-12}\)-level in the summary.
+  \item Therefore, \(h(x_E^{**},u_E^{**}) = h(x_P^*,u_P^*)\) to numerical precision.
+\end{itemize}
+
+\tbl{\linkEqOnlySummary}{summary}
+\tbl{\linkEqOnlyHLevelsAllModels}{h levels}
+\tbl{\linkEqOnlyReconciliation}{comparison}
+\tbl{\linkEqualityOnlyConstraintLevelByScenario}{constraint scenario}
+\tbl{\linkEqualityOnlyConstraintLevelByFamily}{constraint family}
+\tbl{\linkEqualityOnlyConstraintLevelDetails}{constraint details}
+\end{frame}
+
+
+\begin{frame}{Load-Flow Validation Workflow}
+\small
+\begin{itemize}
+  \item Start from both OPF endpoints: own solution and PowerModels solution.
+  \item Warm-start data copied from each OPF endpoint: bus \code{Vm}/\code{Va}, generator \code{Pg}/\code{Qg}, and generator \code{Vg}.
+  \item OPF bus voltages provide the Newton initial point; generator dispatch and voltage setpoints define the PF case.
+  \item PF convergence then gives the post-PF operating point used for margin checks.
+  \item Julia path: PowerModels \code{compute\_ac\_pf}; branch flows recomputed with the same AC branch-flow function.
+  \item Python path: pypowsybl/OpenLoadFlow; branch flows taken from the converged pypowsybl PF result.
+  \item Compare post-PF inequality margins and binding changes at both endpoints.
+  \item Focus table: Julia has post-PF binding-level mismatches but zero endpoint/shared limit violations.
+  \item Python PM-like focus rows still show endpoint/shared limit violations for follow-up.
+\end{itemize}
+
+\vspace{0.4em}
+\tbl{\linkLoadflowWorkflow}{LF validation folder}
+\tbl{\linkLoadflowScope}{LF scope}
+\tbl{\linkLoadflowEndpoint}{endpoint PF rows}
+\tbl{\linkLoadflowMismatchViolationSummary}{focused summary}
+\tbl{\linkLoadflowMismatchViolationFocus}{focused details}
+\tbl{\linkPythonPMlikeLFViolationDiagnosis}{Python diagnosis}
+\tbl{\linkLoadflowConstraintLevelByScenario}{constraint scenario}
+\tbl{\linkLoadflowConstraintLevelByFamily}{constraint family}
+\tbl{\linkLoadflowConstraintLevelDetails}{constraint details}
+\end{frame}
