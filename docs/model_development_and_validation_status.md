@@ -46,8 +46,12 @@ PowerModels.jl (§2).
 ### 1.1 Python (`python/own_models/src/opf/{ac,dc}/`)
 
 - **AC**: `data.py`, `variables.py`, `constraints.py`, `objective.py`,
-  `model.py` (`build_ac_opf_pyomo_model`), `initialization.py` (warm-start
-  sources), `results.py` (`ACOPFResult`), `solve.py` (`solve_ac_opf_pyomo`).
+  `model.py` (arc-based/PowerModels-style formulation --
+  `build_ac_opf_pyomo_model` + `solve_ac_opf_pyomo`, also owns solver
+  execution -- the sole AC-OPF formulation; the earlier bus-injection
+  formulation and its separate `solve.py` were deleted 2026-07-24 once this
+  formulation reached validated parity with PowerModels.jl), `initialization.py`
+  (warm-start sources), `results.py` (`ACOPFResult`).
 - **DC**: `data.py`, `variables.py`, `constraints.py`, `objective.py`,
   `model.py`, `results.py` (`DCOPFResult`), `solve.py`
   (`solve_dc_opf_pyomo`), `validation.py`.
@@ -63,8 +67,12 @@ PowerModels.jl (§2).
 ### 1.2 Julia (`julia/own_models/src/opf/{ac,dc}/`)
 
 - **AC**: `data.jl`, `variables.jl`, `constraints.jl`, `objective.jl`,
-  `model.jl` (`build_ac_opf_model`), `solve.jl` (`solve_ac_opf_own`),
-  `results.jl` (`ACOPFResult` struct, `_safe_barrier_iterations`).
+  `model.jl` (arc-based/PowerModels-style formulation -- `build_ac_opf_model`
+  + `solve_ac_opf_own` -- the sole AC-OPF formulation; the earlier
+  bus-injection formulation and its separate `solve.jl` were deleted
+  2026-07-24 once this formulation reached validated parity with
+  PowerModels.jl), `results.jl` (`ACOPFResult` struct,
+  `_safe_barrier_iterations`).
 - **DC**: `data.jl`, `variables.jl`, `constraints.jl`, `objective.jl`,
   `model.jl`, `solve.jl` (`solve_dc_opf_own`), `results.jl` (`DCOPFResult`
   struct, `_safe_simplex_iterations`).
@@ -96,18 +104,36 @@ cross-language.
   4 Q-limit scenarios): Python and Julia converged identically — same
   switching sequence, same final bus types, differences at numerical
   roundoff (~1e-13–1e-14).
-- Full spec: `docs/pv_pq_switching.md`. Validation detail:
-  `docs/ac_pf_q_limit_cross_language_validation.md`.
+- **2026-07-25 decision: this own Newton-Raphson power-flow implementation is
+  no longer used for any validation or analysis going forward.** It stays in
+  `src/` (not deleted), but PowerModels' own `compute_ac_pf` and
+  PyPowSyBl/OpenLoadFlow are the load-flow engines used everywhere now,
+  including in the AC-OPF diagnostic ladder (`docs/formulations/ac_opf.md`).
+  Full spec (archived): `archive/docs/pv_pq_switching.md`. Validation detail
+  (archived): `archive/docs/ac_pf_q_limit_cross_language_validation.md`.
 
 ### Artifact index (§1)
 
 - `docs/python_own_models_fundamentals.md`, `docs/julia_own_models_fundamentals.md`
 - `docs/implementation_ownership_audit.md`, `docs/julia_own_models_implementation_audit.md`
-- `docs/pv_pq_switching.md`, `docs/ac_pf_q_limit_cross_language_validation.md`
+- `archive/docs/pv_pq_switching.md`, `archive/docs/ac_pf_q_limit_cross_language_validation.md`
+  (archived 2026-07-25 -- own Newton-Raphson PF retired from active use, see above)
 
 ---
 
 ## 2. OPF Validation (own model vs. PowerModels.jl)
+
+**2026-07-24 note**: the bus-injection AC-OPF formulation was deleted in
+both languages (see §1.1/§1.2 above) once the arc-based/PowerModels-style
+formulation reached validated objective parity with PowerModels.jl across
+the full sweep. `results/own_vs_powermodels/julia/` and `.../python/`
+(non-`_pm_like` folders) are frozen pre-deletion snapshots -- they can no
+longer be regenerated (the code that produced them is gone), and are kept
+only because a couple of diagnostic scripts (Julia 41/46, Python
+equivalents) still read them by path for historical comparison. All new
+validation output goes to the `_pm_like`-suffixed folders (e.g.
+`julia_pm_like/`, `python_pm_like/`), which are now simply "the" own-model
+output, not an alternate variant.
 
 ### Methodology
 
@@ -247,6 +273,74 @@ disagreements; a branch-flow sign/magnitude convention check.
      `loading_pct` "diff" was recorded). Fixed: detail rows now only persist
      when both sides actually solved, matching a guard Julia's write path
      already had.
+
+### Python own AC-OPF model — full-parity validation (2026-07-14)
+
+Replicated the entire Julia validation body of work for Python's own AC-OPF
+model: a 313-scenario compact sweep with per-variable diffs/binding-set
+agreement/iteration counts (matching Julia's schema exactly), an optimality
+gap against PowerModels.jl's own OBBT/one-shot-SOC lower bounds, and the
+deviation-minimization formulation-equivalence test (C2). Full report:
+`results/presentable/ac_opf_python_validation/python_ac_opf_validation_report.html`.
+Raw results: `results/own_python/ac_opf_validation/compact_ac_opf_full_comparison.csv`,
+`results/own_python/ac_opf_validation/ac_opf_optimality_gap.csv`,
+`results/own_python/deviation_minimization/deviation_minimization_results.csv`.
+
+- **Full sweep (313 scenarios)**: 215 both solve and agree to near machine
+  precision (median objective diff ~1.4e-8, median max |Pg| diff ~3.3e-9 pu);
+  97 both correctly report infeasibility on the same intentionally-stressed
+  scenarios; **exactly 1 genuine disagreement** —
+  `1888_rte_generator_114_outage`, where own model's Ipopt needs 771
+  iterations/683s (vs. PM's 210/17.7s) and misses the post-hoc feasibility
+  tolerance. Isolated solver-robustness edge case on the single hardest
+  contingency tested, not a formulation defect (every other generator-outage
+  scenario, on every case, matches cleanly).
+- **4 additional rows among the 215** (all `1888_rte`-family, under heavy
+  generator/reactive/angle stress) show a real local-optimum-quality gap:
+  own model lands on a different optimum, worse by up to 92,020 (6.5%
+  relative) in 3/4 cases and marginally better (−3,835) in the 4th.
+- **Iteration/solve-time parity**: close on 6/8 cases; own model needs
+  notably more on `1888_rte` (248.7 vs. 148.4 mean iters, 20.3s vs. 12.2s)
+  and `6470_rte` (379.3 vs. 94.3 mean iters, 104.5s vs. 30.4s) — same two
+  cases flagged throughout.
+- **Binding-set agreement**: small mismatch counts across all constraint
+  types except branch-thermal (30 own-only vs. 1 PM-only, summed across 215
+  scenarios), concentrated entirely in `1888_rte`.
+- **Optimality gap**: 0.003%–9.24% on the 5 cases with a rigorous OBBT bound
+  (`5_pjm`'s 9.24% is a known real residual, already documented on Julia's
+  side too — not Python-specific); 1.57%–6.82% on the 3 large/2 stressed
+  cases using the looser one-shot SOC bound. Since own model's objective
+  already matches PowerModels' to ~1e-8 on every base case, these numbers
+  are effectively the cross-language consistency check, not new information
+  about Python's solution quality per se.
+- **Deviation-minimization (C2, Python)**: PowerModels' exact solved point
+  is directly reachable/feasible under own model's formulation to
+  ~1.4e-7–2.8e-5 L1 deviation on 6/8 base cases (`5_pjm` through
+  `1354_pegase`) — direct proof of formulation equivalence, not just
+  coincidentally-matching objectives. On `1888_rte`/`6470_rte` and their 2
+  stressed variants, real deviation persists (382–502 L1, up to 10.5 pu max
+  Pg) even when Ipopt is seeded exactly at the target point — the same
+  AC-OPF non-uniqueness on large meshed networks already documented above
+  for Julia's C2 test, not an infeasibility.
+- **Methodological bug found & fixed**: `solve_ac_opf_pyomo`'s
+  function-signature default `voltage_bounds=(0.95, 1.05)` silently clips
+  PowerModels' actual solution out of reach for this experiment (e.g.
+  `5_pjm`'s solved bus voltages run up to 1.10 pu) — produced a spurious
+  ~0.33 pu deviation on an otherwise-correct formulation. Root-caused by
+  comparing a manually-built model (no override, ~1.6e-7 deviation) against
+  the default API call (identical seeding, ~0.33 deviation). Fix: the
+  deviation-minimization script (`python/own_models/scripts/
+  22_run_ac_opf_deviation_minimization_experiment.py`) passes
+  `voltage_bounds=None` explicitly, matching Julia's own
+  `voltage_bounds=nothing` default. Section A's compact-sweep numbers were
+  never affected — `iter_compact_ac_validation` already passed
+  `voltage_bounds=None` internally for the base scenario.
+- **Overall verdict**: Python's own AC-OPF model is validated as
+  formulation-equivalent to PowerModels.jl's `ACPPowerModel`, unambiguously
+  on 6 of 8 benchmark systems (all three lines of evidence agree) and with a
+  well-characterized, expected non-uniqueness caveat (not a formulation gap)
+  on the 2 largest, most densely-meshed systems — matching what Julia's own
+  C2 test already found on the same two cases.
 
 ### Reporting artifacts
 
@@ -637,28 +731,341 @@ To avoid conflating two different things that share vocabulary:
 Living checklist — prune items once done, add new ones as they come up,
 rather than letting this grow unbounded.
 
-1. Re-run the DC sweep (`--models=dc --overwrite`, or the same surgical
-   strip-DC-rows-then-rerun approach used for the AC backfill) to actually
-   populate `pm_solve_iterations` for DC in `compact_opf_validation_summary.csv`
-   — the code fix landed (§6) but the dataset itself hasn't been regenerated
-   yet.
-2. Decide whether `python_dc` needs objective/outcome/solve-time plots at
-   *Julia-DC scale* (a real 302-row-equivalent sweep with a PowerModels
-   comparison) — the small-scale version now exists (§6), this item is only
-   about whether the bigger pipeline is worth building.
-3. Decide whether the 1888_rte iteration-count finding (§2 — PowerModels
-   needs *fewer* iterations than the own model on the two largest cases,
-   opposite of the mid-size trend) warrants its own investigation.
-4. Investigate why the own Python DC-OPF formulation presolves to nothing on
-   `case14_ieee`/`case30_ieee` (0 simplex iterations) while PowerModels'
-   formulation of the same cases needs 18-35 — worth understanding whether
-   that's a meaningful formulation difference or just presolve-friendliness
-   (§6).
+1. ~~Re-run the DC sweep to populate `pm_solve_iterations` for DC.~~
+   **Closed (2026-07-11)** — backed up the summary CSV, stripped the 302 DC
+   rows (kept all 305 AC rows), reran `--models=dc` (not `--overwrite`,
+   which would have deleted the whole file including the AC rows).
+   `compact_opf_validation_summary.csv` now has 305 AC + 305 DC = 610 rows,
+   **all** with `pm_solve_iterations` populated. Bonus: the rerun produced 3
+   more DC rows than the original run had (302→305) — the original DC sweep
+   was apparently incomplete, not just missing the iteration column; the 3
+   new scenarios are on `1354_pegase` and `1888_rte`, no rows were lost
+   (diffed against the backup to confirm).
+2. ~~Decide whether `python_dc` needs objective/outcome/solve-time plots at
+   Julia-DC scale.~~ **Decided against, 2026-07-11** — the scenario-sweep
+   infrastructure already exists
+   (`python/own_models/scripts/13_run_compact_dc_opf_sweeps.py`, all 8
+   cases), but it has no PowerModels-comparison layer at all; building one
+   means a new DC reference-export pipeline matching (or reconciling with)
+   Julia's scenario grid, a multi-hour build. Every DC comparison run this
+   session already shows Python DC tracking PowerModels closely — a bigger
+   sweep would mostly add confirmatory volume, not new insight. Not
+   pursued; revisit if a specific need comes up.
+3. ~~Decide whether the 1888_rte iteration-count finding warrants its own
+   investigation.~~ **Closed** — formally checked against the real
+   `own_solve_iterations`/`pm_solve_iterations` data in
+   `docs/notes/solver_tolerances.md` ("Formal closure" subsection). Own
+   model needs up to ~4.5x *more* iterations than PowerModels on
+   `6470_rte` (mean 421.6 vs 94.3, own never faster across 26 scenarios),
+   confirming the two solves take genuinely different trajectories
+   (consistent with the confirmed different starting points), but
+   within-case correlation between iteration count and mismatch magnitude
+   is weak/inconsistent (Pearson r between −0.43 and 0.35) — iteration
+   count is not a reliable predictor of which scenarios show large binding
+   mismatches. The one remaining optional follow-up (warm-starting
+   PowerModels from the own model's solution to see if it converges to the
+   same point) is not required to close this out.
+4. ~~Investigate why the own Python DC-OPF formulation presolves to
+   nothing on `case14_ieee`/`case30_ieee` while PowerModels needs
+   18-35.~~ **Closed (2026-07-11)** — not a formulation difference, purely
+   a warm-start-plumbing one: Julia's own model and PowerModels always hand
+   HiGHS a primal start for every variable (own model via `set_start_value`,
+   PowerModels via `comp_start_value(...)` defaulting to 0.0), which makes
+   HiGHS build a "useful basis" and skip presolve (~17-18 iterations from
+   that crash basis). Python's Pyomo→HiGHS call never passes
+   `warmstart=True`, so HiGHS always solves cold — presolve then runs and,
+   for these small DC-OPF LPs, fully eliminates the problem (0 iterations,
+   correctly). Confirmed directly: clearing Julia's own-model start values
+   reproduces Python's exact presolve-to-empty behavior. Full writeup:
+   `docs/notes/solver_tolerances.md`. No fix needed — both are correct.
 5. Decide whether operational-control metadata for PGLib cases is worth
    building, or whether native-network demonstrations (§4.1) are sufficient
    evidence for the thesis/presentation purpose.
-6. Extend N-1 security screening beyond case118 if broader coverage is
-   needed.
+6. ~~Extend N-1 security screening beyond case118.~~ **Done (2026-07-11)** —
+   generalized `python/own_models/scripts/19_run_n1_case118.py` and
+   `julia/own_models/scripts/10_run_n1_case118.jl` (previously hardcoded to
+   `case118`) to loop over cases; default list is now `case118`/`case300`
+   for both languages. `case1354_pegase` was tried and dropped: its 2,251
+   contingencies took over 5.7 hours on the Julia side (confirmed still
+   actively computing via growing CPU time, not hung) with no sign of
+   finishing — dramatically slower per-contingency than `case118`/`case300`,
+   most likely one or a few pathological contingencies rather than uniform
+   slowness. Not investigated further; killed and excluded from both
+   languages' default lists rather than sinking more time chasing it.
+   Separately, Python's pypowsybl-based screening has a real, pre-existing
+   gap that would have also blocked `case1354_pegase` (and still applies to
+   `case300_ieee`, which is fast enough to keep trying): non-zero
+   phase-shifting transformers, which `pypowsybl_security_validation.py`'s
+   network builder can't represent (it only ever builds plain two-winding
+   transformers, never pypowsybl's `PhaseTapChanger`) — it deliberately
+   raises rather than silently producing a wrong network. The script now
+   detects and cleanly skips phase-shifted cases with a clear log message
+   instead of crashing; Julia's PowerModels-based screening has no such
+   gap. `case1888_rte`/`case6470_rte` deliberately excluded from both
+   languages' default lists too — 2,828/10,335 contingencies each, more
+   than the added insight over what the warm-start ablation already found
+   about those two cases is worth right now.
+7. **New, D1 closed (2026-07-11)**: N-1 contingency load-flow
+   dispatch-source/warm-start consistency experiment
+   (`julia/own_models/scripts/12_run_n1_load_flow_warmstart_experiment.jl`).
+   Question: does post-contingency power-flow security classification
+   (secure/insecure) depend on whether the pre-contingency dispatch comes
+   from own model's AC-OPF or PowerModels', or on whether the post-outage
+   Newton-Raphson starts warm (from that dispatch's voltages) or flat? On
+   `case118`: **100% agreement** across all 4 combinations (own/PM ×
+   warm/flat) — 240/240 contingencies agree on both convergence and
+   secure/insecure classification. At the time, 9 contingencies failed to
+   converge in every variant (same 9 each time) — consistent, not a
+   warm-start artifact, flagged for a closer look. Clean confirmation of the
+   hypothesis that the two OPF solutions are practically interchangeable as
+   N-1 screening inputs, at least for this case. Not yet run on `case300`
+   (only currently scoped to `case118`).
+
+   **Update, 2026-07-12**: that closer look (item 9 below) found those 9
+   "failures" were never a warm-start issue — they're case118's radial-spur
+   branches, which island a load/generator-carrying bus, mathematically
+   singular for Julia's `compute_ac_pf` without island detection. Fixed;
+   D1 rerun now reports **240/240 converged, 32/240 secure**, still 100%
+   agreement across all 4 combinations.
+8. **Updated 2026-07-11 — narrower than originally stated.** The warm-start
+   ablation (`docs/notes/solver_tolerances.md` "Warm-start ablation, part 3")
+   was extended from 1 case to all 8 default PGLib cases, in both languages.
+   **This overturned the original framing**: a Julia-vs-Python `case`-start
+   iteration penalty is *not* a general own-model implementation trait — for
+   6 of 8 cases (`5_pjm` through `1354_pegase`), Python's and Julia's
+   case-start penalty ratios match almost exactly (often to 2 decimal
+   places, e.g. `30_ieee`: both 1.13x). The gap is concentrated specifically
+   in `6470_rte` (2.49x Python vs 3.84x Julia) and mildly `1888_rte` (1.02x
+   vs 1.44x). Correct framing: something about these one or two
+   RTE-derived networks specifically — not a JuMP-vs-Pyomo interface
+   difference in general — makes a poor starting point much costlier for
+   Julia's Ipopt call there. Not yet investigated — candidates worth
+   checking: network conditioning on `6470_rte` specifically, generators
+   sitting near bounds in that case's dispatch, constraint/variable scaling,
+   or Ipopt's `nlp_scaling_method`.
+8. ~~Named/indexed JuMP constraints + notation doc.~~ **Closed
+   (2026-07-11)**. Python's Pyomo models were already named/indexed by
+   construction; Julia's `@constraint`/`@NLconstraint` calls were anonymous
+   (bare, inside `for` loops, refs discarded) — refactored every
+   constraint-adding function in
+   `julia/own_models/src/opf/{ac,dc}/constraints.jl` to return named,
+   id-indexed `Dict`s/NamedTuples of `ConstraintRef`s, threaded through
+   `build_{ac,dc}_opf_model` (now exported), which returns them as a
+   `constraints` NamedTuple. **Two-pass fix**: the first pass only indexed
+   (stored refs) without naming the AC power-balance/thermal constraints,
+   since those used the legacy `@NLconstraint`/`@NLexpression` macros,
+   which don't support `base_name`/`set_name` at all (verified — both
+   error). Fixed by switching those to JuMP's modern, unified
+   `@constraint`/`@expression` macros (JuMP 1.30.1 handles nonlinear
+   expressions with these natively). Solve behavior confirmed unchanged:
+   same solution to full float precision on a nonlinear test problem, and
+   real-model objectives agree to ~1e-11 relative before/after (float-noise
+   level from a different internal expression-graph representation, well
+   inside Ipopt's own `1e-8` convergence tolerance — not a real change).
+   Verified `dual(...)` extraction works end-to-end on both languages, all
+   constraint types, both before and after the macro switch. Full
+   symbol-to-identifier mapping (including the pre-existing Python names):
+   `docs/notation.md`. This unblocks C2
+   (deviation-minimization validation), which needs per-constraint duals.
+9. **Julia/Python N-1 disagreement — root-caused AND fixed, 2026-07-12.**
+   Julia (`compute_ac_pf`) and Python (pypowsybl/OpenLoadFlow) agreed on
+   only 225/240 (93.8%) of `case118`'s N-1 secure/insecure verdicts.
+   Cross-referenced the 15 disagreements' raw
+   `max_loading_pct`/`min_vm_pu`/`max_vm_pu` values (both tools' per-
+   contingency CSVs) against the pre-contingency base-case loading/voltage
+   from D2's `n1_case118_variable_impact.csv` — no new solves needed for
+   the root-cause pass. Two distinct mechanisms found, one root-cause-only,
+   one fixed outright.
+
+   **13 (now 15, see below) of 15 are a classification-tolerance artifact,
+   not a real security disagreement.** Both tools apply the *identical*
+   violation tolerance (thermal `loading% > 100 + 1e-6`, voltage
+   `|Vm − limit| > 1e-6` pu — verified directly in both `n1_screening.jl`
+   and `pypowsybl_security_validation.py`). The base-case optimal AC-OPF
+   dispatch pins several branches/buses essentially exactly at their
+   thermal/voltage bound (normal, cost-optimal OPF behavior — e.g. branch
+   163 at 100.0000002% loading, branch 106 at 100.0000006%, over a dozen
+   buses at ~1.0600000–1.0600001 pu against `vmax=1.06`). For contingencies
+   that barely perturb those specific elements, the post-contingency value
+   stays razor-close to the bound, and the two independently-implemented
+   Newton-Raphson solvers never agree better than ~1e-4–2e-3 pu/% —
+   3-4 orders of magnitude coarser than the 1e-6 classification tolerance —
+   so whichever side of the true bound each engine's own numerical noise
+   lands on decides its secure/insecure call. Not a bug in either tool;
+   practical implication: a hard binary classification at 1e-6 tolerance is
+   tighter than any single AC PF engine's own precision, and a "marginal"
+   third bucket (or a ~1e-3 tolerance) would remove this disagreement
+   without hiding the genuinely thin physical margins several `case118`
+   constraints run under at N-1.
+
+   **The other 2 of 15 turned out to be a bigger finding: not an NR
+   robustness gap, an island-handling gap — and it was fixable.** All 9 of
+   Julia's always-non-convergent contingencies (same 9 in every D1 variant)
+   turned out to be structurally identical: a union-find connectivity check
+   against the case file confirmed each one fully disconnects a leaf bus
+   (degree 0 in the surviving graph) that carries real load and/or
+   generation (bus 10: gen; 73: 0.06pu load + gen; 87: gen; 111: gen; 112:
+   0.68pu load + gen; 116: 1.84pu load + gen; 117: 0.2pu load, no gen). A
+   bus with real injection and no path to any slack bus is mathematically
+   singular for a single-slack Newton-Raphson solve — Julia's
+   `compute_ac_pf` had no island-detection step, so it correctly failed to
+   converge on all 9, every time, regardless of warm/flat start (explaining
+   D1's "same 9 fail in every variant" finding too — it was never a
+   warm-start-sensitivity result). pypowsybl/OpenLoadFlow, by contrast,
+   detects and drops de-energized islands before solving (standard
+   industrial-PF-engine practice) — it converged on all 9 all along,
+   correctly finding real overloads on 7 (`outage::7`: 159.8% loading,
+   `outage::9`: 159.9% — genuine, not noise) and no violation on the
+   remaining 2 (`outage::134`/`outage::176`).
+
+   **Fix, implemented 2026-07-12**: `run_powermodels_ac_pf_compute`
+   (`julia/own_models/src/analysis/ac_pf_compute_validation.jl`) now takes
+   a `drop_islands::Bool=true` kwarg that calls PowerModels.jl's own
+   `select_largest_component!` before solving, plus a small
+   `_deactivate_equipment_on_isolated_buses!` helper that also turns off
+   generators/loads/shunts on the newly-isolated buses (needed because
+   `select_largest_component!` only flips `bus_type`, and
+   `compute_ac_pf`'s `instantiate_pf_data` asserts if an in-service
+   generator is still attached to a bus type it doesn't recognize).
+   Verified as a true no-op on every non-islanding contingency and on the
+   fully-connected base case before rerunning anything. Threaded through
+   `run_n1_branch_screening`/`run_n1_generator_screening`/`run_n1_screening`
+   as a passthrough kwarg, same pattern as `start_mode`.
+
+   **Result, full rerun (`10_run_n1_case118.jl`, `12_...warmstart...jl`,
+   `14_...variable_impact...jl`)**: `case118` converged 231/240 → **240/240**,
+   secure 30/240 → **32/240** (both the main screen and D1, which stays at
+   100% cross-variant agreement). `case300` converged 375/480 → **459/480**
+   (secure stays 0/480 — the 84 newly-resolved contingencies are all
+   genuinely insecure too). D2 rerun: 122,145 → 126,868 delta rows; the 9
+   newly-resolved branch outages turn out to behave like generator outages
+   for Pg (two of them, `outage::7`/`outage::9`, average 0.113 pu |ΔPg| —
+   comparable to genuine generator-outage redispatch, since islanding a
+   generation-carrying bus removes that generation from the surviving
+   network's balance, same mechanism as a generator trip), pulling the
+   overall branch-outage mean |ΔPg| up 2.7x and narrowing the
+   branch-vs-generator contrast from 18x to ~6.8x.
+
+   **Bonus, unplanned**: this is the exact same bug behind `case300`'s
+   `outage::243` unphysical `min_vm_pu = -0.58` result (a singular-system
+   Newton-Raphson artifact, not a data bug) — now resolved too
+   (`+0.94` pu, physically normal; case300's max severity score dropped
+   from a spurious 9.60 to a real 2.42 at `outage::137`).
+
+   **Net effect on the Julia-vs-Python count**: still 225/240 (93.8%) — one
+   disagreement resolved (`outage::176`, now agrees), one newly exposed
+   (`outage::133`, previously "agreed" with Python only because Julia
+   failed to converge; now that it genuinely converges it turns out to be
+   the same boundary-tolerance pattern as the other 13). The *count* didn't
+   change, but the *composition* did: all 15 remaining disagreements are
+   now explained by the single classification-tolerance mechanism above,
+   zero by non-convergence. Updated artifacts:
+   `results/presentable/n1_screening/n1_screening_report.html`,
+   `results/presentable/n1_screening/n1_variable_impact_report.html`.
+10. **Archived 2026-07-25** (closed 2026-07-12): C2, the deviation-
+    minimization formulation-equivalence test (signed-slack `x = target +
+    dx_plus - dx_minus` objective, confirming own model's feasible region
+    matches PowerModels' at the solution point). This whole diagnostic
+    technique -- across all its later generations (PM-like constrained/
+    equality-only variants, and the final Q1-Q10 ladder's linking-LP
+    deviation reconstruction) -- was archived per an explicit decision that
+    it has no further/future application; the final ladder's conclusions
+    remain live in `docs/formulations/ac_opf.md`/`comments.md`. Full
+    verbatim writeup of this original C2 test preserved in
+    `archive/docs/superseded_status_doc_sections.md`.
+11. **D2 closed (2026-07-12), rerun same day after the island-handling
+    fix**: post-contingency variable-impact analysis
+    (`julia/own_models/scripts/14_run_n1_variable_impact_analysis.jl`).
+    Captures full per-element post-contingency state (every generator's
+    Pg/Qg, every bus's Vm/Va, every branch's loading %) for all 240
+    `case118` N-1 contingencies and compares against the pre-contingency
+    AC-OPF solution — 126,868 (contingency × element × variable) delta rows
+    (up from 122,145 pre-fix, once the 9 previously-non-convergent branch
+    outages resolve — see item 9), reusing `n1_screening.jl`'s internals via
+    module-qualified access rather than duplicating logic. Report:
+    `results/presentable/n1_screening/n1_variable_impact_report.html`.
+
+    Key findings: **branch loading is where the real severity lives** —
+    up to 285 percentage points of change on a single branch (`outage::104`
+    pushes branch 106 from 100% to 385% loaded), vs. sub-1-pu changes for
+    every other variable; voltage magnitude barely moves at all (max 0.09
+    pu) — `case118` is thermally constrained under N-1, not
+    voltage-constrained. **Pg's behavior is mostly contingency-type
+    dependent, and the physics explains why**: a power flow treats Pg as a
+    fixed PV-bus input (only the slack bus's Pg is actually solved for), so
+    a *typical* branch outage barely moves Pg anywhere (median |ΔPg|=0, mean
+    0.0009 pu); generator outages are different by construction —
+    `apply_proportional_reserve_balancing` explicitly redistributes the
+    lost output across remaining generators' headroom before the power
+    flow runs, so mean |ΔPg| is 18x a typical branch outage's (0.016 pu)
+    even though the median stays 0 (redispatch concentrates on whichever
+    generators have room, leaves most of the other ~50 generators
+    untouched). **Exception, found in the 2026-07-12 rerun**: the 9
+    previously-non-convergent branch outages (item 9) behave like generator
+    outages for Pg, not branch outages — islanding a generation-carrying bus
+    removes that generation from the surviving network, the same mechanism
+    as a generator trip. Including them pulls the overall branch-outage mean
+    |ΔPg| up to 0.0023 pu (2.7x the typical-only figure), narrowing the
+    branch-vs-generator contrast from 18x to ~6.8x once they're in the
+    dataset. **Generator outages cause branch overloads too, sometimes
+    nearly as severe as a direct branch trip** — `outage::gen::45` pushes
+    branch 119 from 27% to 123% loaded (96.7pp), comparable to several of
+    `outage::104`'s branch-outage cascades — worth remembering before
+    assuming branch outages are inherently the more dangerous contingency
+    type.
+12. **Archived 2026-07-25** (closed 2026-07-12, corrected 2026-07-13): the
+    AC-OPF optimality-gap / OBBT bound-tightening study (SOC relaxation and
+    PowerModels' `solve_obbt_opf!` used as certified lower bounds on
+    AC-OPF's true global optimum). Its own script was already gone from
+    disk; full verbatim writeup (gap-by-case table, the `5_pjm`/`30_ieee`
+    findings, the OBBT-infeasible-on-large-cases finding) preserved in
+    `archive/docs/superseded_status_doc_sections.md`.
+13. **Closed (2026-07-12)**: full-scenario Julia AC-OPF warm-start ablation
+    (`julia/own_models/scripts/16_run_ac_opf_full_scenario_warm_start_ablation.jl`).
+    Widens item 12's warm-start ablation from 8 base cases + 2 stressed
+    scenarios to the *entire* scenario grid the main compact validation
+    sweep uses (09's `compact_scenarios`: 13 scenario types × 8 cases, 313
+    distinct scenarios, `include_no_reference=true` to match the full
+    historical dataset). Reuses `compact_scenarios` and its ~20 dependency
+    functions directly by `include_string`-ing
+    `09_run_compact_opf_validation_sweeps.jl`'s source with its trailing
+    unconditional `main()` call stripped out, rather than reimplementing 13
+    scenario generators — guarantees identical scenario definitions, zero
+    drift risk. Checkpointed (one CSV row appended per (case, scenario,
+    source) solve, resumable on rerun). 1,252 solves total (313 × 4
+    solvers).
+
+    **Mid-run correction**: the original `max_iter=3000` (the repo's usual
+    pin) let `1888_rte_load_x1.4`'s own-model `case`-start mode run 3.27h
+    without converging. Killed, purged the 4 rows that had hit
+    `ITERATION_LIMIT`, dropped `max_iter` to 1000 for this script
+    specifically (every scenario that converges normally in this dataset
+    needs well under 600 iterations even under stress), resumed from
+    checkpoint — user explicitly chose this over accepting the open-ended
+    runtime or dropping `6470_rte` from scope. Worst single scenario after
+    the fix: ~34 min (`6470_rte_branch_2170_out`), fully bounded.
+
+    **Findings**: results in
+    `results/presentable/ac_opf_warm_start_experiment/full_scenario_ablation_report.html`.
+    (1) **Convergence is 100% scenario-determined, not solver-determined**
+    — all 4 solvers succeed/fail on the exact same 313/313 scenarios; the
+    31% non-convergence rate is by design (`tight_voltage_limits` 29%,
+    `branch_congestion` 44%, `branch_outage` 46% — deliberately adversarial
+    scenario types). (2) **The `6470_rte`/`1888_rte` case-start penalty
+    finding from the original 2-case pilot is now confirmed as a real,
+    general property, not a single-scenario artifact**: `6470_rte` averages
+    a 3.01× case-start penalty across 27 converged scenarios (median
+    3.24×, max 4.64×), `1888_rte` averages 1.59× across 24 (max 4.45×, on
+    `angle_20deg` — not the load-scaling scenario one might expect), while
+    all 6 smaller/medium cases stay at ~1.0× (no penalty) across every
+    scenario type. (3) Several `6470_rte` scenarios (the "×1.0"/non-binding
+    variant of each parameter sweep) land on the exact same 561 case-start
+    iterations as the base case — confirms this is a stable property of
+    the network's conditioning, not scenario-generation noise. (4)
+    `1888_rte_load_x1.4` (reactive_power_stress) hits the iteration cap on
+    *all four* solvers, not just own model's — a genuinely hard/near-
+    infeasible operating point, not a warm-start artifact (PowerModels
+    fails much faster, ~99s vs. Julia's 1,100-2,150s, but still fails).
 
 ---
 
@@ -666,10 +1073,13 @@ rather than letting this grow unbounded.
 
 **Model development**: `docs/python_own_models_fundamentals.md`,
 `docs/julia_own_models_fundamentals.md`, `docs/implementation_ownership_audit.md`,
-`docs/julia_own_models_implementation_audit.md`, `docs/pv_pq_switching.md`
+`docs/julia_own_models_implementation_audit.md`, `archive/docs/pv_pq_switching.md`
+(archived -- own Newton-Raphson PF retired from active use, §1),
+`docs/notation.md` (math symbol → Python/Julia code identifier mapping,
+including how to pull constraint duals/shadow prices in each language)
 
 **OPF validation**: `docs/python_ac_opf_validation.md`,
-`docs/ac_pf_q_limit_cross_language_validation.md`, `docs/implementation_status.md`,
+`archive/docs/ac_pf_q_limit_cross_language_validation.md` (archived), `docs/implementation_status.md`,
 `docs/notes/solver_tolerances.md` (verified Ipopt/HiGHS/PowerModels tolerances
 and the binding-constraint classification mismatch root cause),
 `results/presentable/opf_validation_findings/`
