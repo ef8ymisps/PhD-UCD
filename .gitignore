@@ -6,6 +6,9 @@ __pycache__/
 # Generated results (regenerate from scripts, don't belong in git history)
 results/
 
+# Generated presentation/upload bundles (copies of docs/ + results/, can be multi-GB)
+presentation_upload_bundle_*/
+
 # Downloaded/derived case data
 data/raw/
 data/matpower_m/
