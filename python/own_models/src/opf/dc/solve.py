@@ -28,29 +28,91 @@ DEFAULT_HIGHS_TOLERANCES: dict[str, Any] = {
 
 
 def make_solver(solver_name: str | None = None):
-    """Return an available Pyomo solver, defaulting to HiGHS for DC OPF."""
-    candidates = [solver_name] if solver_name is not None else [
-        "highs"
-    ]
+    """Return an available Pyomo solver, defaulting to HiGHS for DC OPF.
 
-    for name in candidates:
-        if name is None:
-            continue
+    Preference order when `solver_name` is not given: appsi-Gurobi (if
+    licensed) -> appsi-HiGHS -> classic (file-based) HiGHS. appsi (Pyomo's
+    Auto-Persistent Solver Interface) talks to the solver directly via its
+    own Python API instead of writing an LP file out and re-parsing HiGHS's
+    own solution back -- confirmed directly on 118_ieee's monolithic
+    DC-SCOPF: master_solve time drops from ~20-26s to ~10-11s (appsi-HiGHS)
+    or ~10s (appsi-Gurobi), with HiGHS's own reported solve time unchanged
+    either way (~1.3-1.9s) -- the old gap was purely Pyomo's own
+    translation overhead, not more solver work. Gurobi is additionally
+    faster than HiGHS on the generator-outage automatic-response MILP
+    specifically (confirmed: 26.8s vs ~150-465s depending on gap
+    tolerance, same objective to solver precision) -- the real binary
+    variables in that model are exactly where Gurobi's branch-and-cut has
+    room to matter. Gracefully falls back when Gurobi isn't
+    installed/licensed (e.g. a future environment without an academic
+    license) rather than failing outright -- `selected_solver_name` tells
+    the caller which one it actually got ("gurobi_appsi", "highs_appsi",
+    or "highs"), used both for tolerance-option dispatch (see
+    `apply_solver_tolerances` below) and recorded in evidence CSVs.
 
-        solver = pyo.SolverFactory(name)
-
+    Explicitly passing `solver_name` bypasses this preference order
+    entirely and returns exactly that classic Pyomo solver (unchanged
+    behavior, e.g. for Ipopt/AC-OPF callers that never wanted this path).
+    """
+    if solver_name is not None:
+        solver = pyo.SolverFactory(solver_name)
         try:
             available = solver.available(exception_flag=False)
         except TypeError:
             available = solver.available()
-
         if available:
-            return solver, name
+            return solver, solver_name
+        raise DCOPFError(f"Requested solver {solver_name!r} is not available.")
+
+    try:
+        from pyomo.contrib.appsi.solvers import Gurobi as _AppsiGurobi
+
+        gurobi = _AppsiGurobi()
+        if gurobi.available() in (gurobi.Availability.FullLicense, gurobi.Availability.LimitedLicense):
+            return gurobi, "gurobi_appsi"
+    except Exception:
+        pass
+
+    try:
+        from pyomo.contrib.appsi.solvers import Highs as _AppsiHighs
+
+        highs = _AppsiHighs()
+        if highs.available():
+            return highs, "highs_appsi"
+    except Exception:
+        pass
+
+    solver = pyo.SolverFactory("highs")
+    try:
+        available = solver.available(exception_flag=False)
+    except TypeError:
+        available = solver.available()
+    if available:
+        return solver, "highs"
 
     raise DCOPFError(
         "No suitable Pyomo HiGHS solver found. Install highspy or provide a "
         "compatible Pyomo solver name explicitly."
     )
+
+
+def apply_solver_tolerances(solver: Any, selected_solver_name: str, options: dict[str, Any]) -> None:
+    """Apply `options` to `solver`, dispatching to the right attribute for
+    whichever interface `make_solver` actually returned -- classic Pyomo
+    solvers take options via `.options[key]=value`; appsi-HiGHS via
+    `.highs_options[key]=value`; appsi-Gurobi via `.gurobi_options[key]=
+    value`. Centralized here (not repeated at every call site) since two
+    modules (this one's own `solve_dc_opf_pyomo` and
+    `opf/dc_scopf/solve.py`'s `solve_dc_scopf_pyomo`) both need it."""
+    if selected_solver_name == "gurobi_appsi":
+        for key, value in options.items():
+            solver.gurobi_options[key] = value
+    elif selected_solver_name == "highs_appsi":
+        for key, value in options.items():
+            solver.highs_options[key] = value
+    else:
+        for key, value in options.items():
+            solver.options[key] = value
 
 
 def solve_dc_opf_pyomo(
@@ -74,10 +136,15 @@ def solve_dc_opf_pyomo(
     )
 
     solver, selected_solver_name = make_solver(solver_name)
-    effective_options = dict(DEFAULT_HIGHS_TOLERANCES) if selected_solver_name == "highs" else {}
+    # DEFAULT_HIGHS_TOLERANCES only applies to HiGHS-backed interfaces
+    # ("highs" classic or "highs_appsi") -- Gurobi has entirely different
+    # option names, and there are no similarly-verified Gurobi tolerance
+    # defaults pinned here (same "don't pin unverified values" standard as
+    # the rest of this project) -- gurobi_appsi runs on Gurobi's own
+    # defaults unless `solver_options` overrides them explicitly.
+    effective_options = dict(DEFAULT_HIGHS_TOLERANCES) if selected_solver_name in ("highs", "highs_appsi") else {}
     effective_options.update(solver_options or {})
-    for key, value in effective_options.items():
-        solver.options[key] = value
+    apply_solver_tolerances(solver, selected_solver_name, effective_options)
 
     raw_results, iterations = solve_with_iteration_capture(solver, model, tee=tee)
 
